@@ -9,32 +9,69 @@
     try { for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k && k.startsWith('nlv2_')) { const n = 'nlv3_' + k.slice(5); if (localStorage.getItem(n) === null) localStorage.setItem(n, localStorage.getItem(k)); } } } catch (e) { }
   </script>
   <script>try { document.documentElement.dataset.theme = localStorage.getItem('nlv3_theme') || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'); } catch (e) { }</script>
-  <link rel="stylesheet" href="shared/base.css?v=202610151343">
-  <link rel="stylesheet" href="cards.css?v=202610151343">
+  <link rel="stylesheet" href="shared/base.css?v=202610180034">
+  <link rel="stylesheet" href="cards.css?v=202610180034">
 </head>
 <body data-layout="cards">
   <header class="topbar">
     <span class="brand">NutriLabel <small>Recipe Builder</small></span>
     <span class="title" id="recipeTitle"></span>
-    <div class="view-seg" id="viewSeg" title="Switch between the board and a top-to-bottom sheet of the same assembly"><button data-view="board" class="on">⊞ Board</button><button data-view="sheet">☰ Sheet</button></div>
     <span class="spacer"></span>
     <button class="btn" id="undo" title="Undo (Ctrl+Z)">↶</button>
     <button class="btn" id="redo" title="Redo (Ctrl+Y)">↷</button>
     <button class="btn" id="arrange">⇶ Auto-arrange</button>
     <button class="btn" id="fit">⤢ Fit</button>
-    <button class="btn" id="linesBtn" title="Show or hide the lines between cards (the “see assembly” links still jump to each card)">⤳ Lines</button>
-    <label class="btn tb-sel" title="Weights: pick Metric (g / kg) or Imperial (oz / lb), then Auto (switches to kg above 999 g, or to lb from 16 oz) or one fixed unit. Prices follow: $/kg or $/lb. Saved values are always grams and $/kg">Units <select id="unitSys"><option value="metric">Metric (g / kg)</option><option value="imperial">Imperial (oz / lb)</option></select><select id="unitMode"></select></label>
-    <label class="btn tb-sel" title="How the Scaling button on each card works: flip the card to a scaling side, or hide the building columns on the same card">Scaling view <select id="scaleStyle"><option value="flip">Flip card</option><option value="hide">Hide columns</option></select></label>
     <button class="btn" id="toggleNut">All facts ▸</button>
     <button class="btn" id="addCard" title="Add an unconnected card to this assembly">＋ Add card</button>
     <button class="btn" id="pasteCard" hidden>📋 Paste card</button>
+    <button class="btn" id="settingsBtn" title="Settings: units, scaling view, theme, lines, retailers">⚙ Settings</button>
+    <button class="btn" id="importBtn" title="Import recipes from an Excel file (the team's recipe workbook or this app's exports)">⬆ Import</button><input type="file" id="importFile" accept=".xlsx,.xls,.csv" hidden>
+    <button class="btn" id="exportBtn" title="Download this recipe as an Excel file (.xlsx)">⬇ Export</button>
     <button class="btn" id="compare" title="Compare assemblies and versions side by side">⇄ Compare</button>
     <button class="btn primary" id="newRecipe">＋ New assembly</button>
     <button class="btn" id="newVer">⎘ New Version</button>
-    <button class="btn theme-btn" id="themeBtn"></button>
     <!-- TEMP: reset-to-sample button (remove this line and the #resetSample handler in cards.js) -->
     <button class="btn ghost" id="resetSample" title="Replace this tab with the original sample assembly (undo with Ctrl+Z)">↺ Reset</button>
   </header>
+  <!-- Settings drawer (⚙ in the top bar): the controls keep their ids, so cards.js wires them as before -->
+  <aside class="settings" id="settings" hidden aria-label="Settings">
+    <div class="st-head"><b>⚙ Settings</b><button class="st-x" id="settingsClose" title="Close (Esc)">×</button></div>
+    <section class="st-sec">
+      <h3>View</h3>
+      <p>Board: cards laid out freely with lines between them. Sheet: the same cards stacked top to bottom.</p>
+      <div class="st-row st-sel"><div class="view-seg" id="viewSeg" title="Switch between the board and a top-to-bottom sheet of the same assembly"><button data-view="board" class="on">⊞ Board</button><button data-view="sheet">☰ Sheet</button></div></div>
+    </section>
+    <section class="st-sec st-sheet">
+      <h3>Sheet view</h3>
+      <p>How cards are shown in the Sheet view: how sub-assemblies are linked, and how wide the cards are.</p>
+      <div class="st-row"><span>Links</span><div class="sv-seg"><button data-svlinks="jump">Jump links</button><button data-svlinks="indent">Indent + rail</button></div></div>
+      <div class="st-row"><span>Width</span><div class="sv-seg"><button data-svwidth="full">Full width</button><button data-svwidth="card">Card width</button></div></div>
+    </section>
+    <section class="st-sec">
+      <h3>Units</h3>
+      <p>How weights are shown and typed. Pick Metric or Imperial, then Auto (g → kg at 1000 g, oz → lb at 16 oz) or one fixed unit. Prices follow ($/kg or $/lb). Saved values are always grams and $/kg.</p>
+      <div class="st-row st-sel"><select id="unitSys"><option value="metric">Metric (g / kg)</option><option value="imperial">Imperial (oz / lb)</option></select><select id="unitMode"></select></div>
+    </section>
+    <section class="st-sec">
+      <h3>Scaling view</h3>
+      <p>What the Scaling button on a card does: flip the card to its scaling side, or hide the building columns on the same card.</p>
+      <div class="st-row st-sel"><select id="scaleStyle"><option value="flip">Flip card</option><option value="hide">Hide columns</option></select></div>
+    </section>
+    <section class="st-sec">
+      <h3>Display</h3>
+      <div class="st-row"><span>Light / dark theme</span><button class="btn theme-btn" id="themeBtn"></button></div>
+      <div class="st-row st-lines"><span>Lines between cards <small>(board view)</small></span><button class="btn" id="linesBtn" title="Show or hide the lines between cards (the “see assembly” links still jump to each card)">⤳ Lines</button></div>
+    </section>
+    <section class="st-sec">
+      <h3 class="retail-h">⛔ Retailers <button class="retail-add" id="retailAdd" title="Add a retailer and the ingredients it does not allow">＋</button></h3>
+      <p>Ingredients each retailer does not allow. Cards flag them with ⛔ while chefs build. Paste a whole list at once (one per line, or separated by commas).</p>
+      <div id="retailList"></div>
+    </section>
+    <div class="st-foot">
+      <span>Changes show straight away. <b>Save</b> keeps them; <b>Cancel</b> puts the earlier settings back. Retailer lists save as you edit them.</span>
+      <div class="st-btns"><button class="btn" id="settingsCancel">Cancel</button><button class="btn primary" id="settingsSave">Save</button></div>
+    </div>
+  </aside>
   <main class="cmain" id="cmain">
     <button class="side-tog" id="sideTog" title="Hide the panel">‹</button>
     <aside class="side">
@@ -45,10 +82,6 @@
       <div class="side-block fav-block">
         <div class="side-h">★ Favorites</div>
         <div id="favList"></div>
-      </div>
-      <div class="side-block retail-block">
-        <div class="side-h retail-h">⛔ Retailers <button class="retail-add" id="retailAdd" title="Add a retailer and the ingredients it does not allow">＋</button></div>
-        <div id="retailList"></div>
       </div>
       <div class="side-block grow">
         <div class="side-h">Ingredient library</div>
@@ -74,10 +107,6 @@
     </section>
     <section class="sheetview" id="sheetView">
       <div class="sv-bar">
-        <span class="sv-lab">Links</span>
-        <div class="sv-seg"><button data-svlinks="jump">Jump links</button><button data-svlinks="indent">Indent + rail</button><button data-svlinks="lines">Lines</button></div>
-        <span class="sv-lab">Width</span>
-        <div class="sv-seg"><button data-svwidth="full">Full width</button><button data-svwidth="card">Card width</button></div>
         <span class="sv-hint">Drag ⠿ or use ↑ ↓ to reorder cards</span>
       </div>
       <div class="sv-inner" id="svInner"><svg class="links" id="svLinks"></svg><div id="svCards"></div></div>
@@ -96,8 +125,8 @@
     </section>
     <aside class="nut" id="nut"></aside>
   </main>
-  <script src="shared/data.js?v=202610151343"></script>
-  <script src="shared/engine.js?v=202610151343"></script>
-  <script src="cards.js?v=202610151343"></script>
+  <script src="shared/data.js?v=202610180034"></script>
+  <script src="shared/engine.js?v=202610180034"></script>
+  <script src="cards.js?v=202610180034"></script>
 </body>
 </html>

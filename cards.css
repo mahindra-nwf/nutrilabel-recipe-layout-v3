@@ -204,7 +204,6 @@ body:not(.view-sheet) .sheetview { display: none; }
 .lk-indent .rcard { margin-left: calc(var(--depth, 0) * 40px); }
 .w-full.lk-indent .rcard { width: calc(100% - var(--depth, 0) * 40px); }
 .lk-indent .rcard::before { content: ''; position: absolute; left: -16px; top: 4px; bottom: 4px; width: 4px; border-radius: 2px; background: var(--c); opacity: .75; }
-.lk-lines .sv-inner { padding-left: 104px; }
 .sv-grip, .sv-only { display: none; }
 .sheetview .sv-grip { display: inline-flex; align-items: center; cursor: grab; color: var(--faint); padding: 0 6px 0 0; font-size: 18px; user-select: none; touch-action: none; }
 .sheetview .sv-grip:hover { color: var(--text); }
@@ -560,3 +559,61 @@ body.hide-links #links .lk, body.hide-links .port { display: none; }
 .rc-ban { margin-top: 8px; padding: 6px 10px; border-radius: 8px; background: var(--danger-soft); color: var(--danger); font-size: 12px; line-height: 1.45; }
 .rc-ban span { opacity: .8; }
 .tr-ban { font-size: 11px; margin-left: 2px; }
+.rt-also { margin-left: 4px; padding: 0 5px; border-radius: 999px; background: var(--danger); color: #fff; font-size: 10px; font-weight: 700; cursor: help; }
+
+/* ⚙ Settings drawer */
+.settings { position: fixed; top: 0; right: 0; bottom: 0; width: min(360px, 100vw); z-index: 2100; display: flex; flex-direction: column; background: var(--panel); border-left: 1px solid var(--line); box-shadow: var(--shadow-lg); overflow: auto; }
+.settings[hidden] { display: none; }
+.st-head { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; background: var(--panel); border-bottom: 1px solid var(--line); font-size: 15px; }
+.st-x { border: 0; background: none; color: var(--muted); font-size: 22px; line-height: 1; cursor: pointer; padding: 0 4px; }
+.st-x:hover { color: var(--text); }
+.st-sec { padding: 14px 16px; border-bottom: 1px solid var(--line2); }
+.st-sec h3 { margin: 0 0 4px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; color: var(--faint); }
+.st-sec p { margin: 0 0 10px; font-size: 12px; line-height: 1.45; color: var(--muted); }
+.st-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 4px 0; font-size: 13px; }
+.st-row small { color: var(--faint); }
+.st-sel { justify-content: flex-start; flex-wrap: wrap; }
+.st-sel select { padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--input); color: var(--text); font: inherit; font-size: 13px; }
+#settingsBtn.on { background: var(--accent-soft); color: var(--accent); }
+body.view-sheet .st-lines { display: none; }
+.settings .view-seg { margin-left: 0; }
+.settings .sv-seg { margin-right: 0; }
+body:not(.view-sheet) .st-sheet { display: none; } /* Sheet view settings only while the sheet is shown */
+.st-foot { position: sticky; bottom: 0; margin-top: auto; padding: 12px 16px; display: flex; flex-direction: column; gap: 10px; background: var(--panel); border-top: 1px solid var(--line); font-size: 11.5px; line-height: 1.4; color: var(--muted); }
+.st-btns { display: flex; justify-content: flex-end; gap: 8px; }
+
+/* ⬇ Export dialog */
+.xp-txt { font-size: 12.5px; line-height: 1.45; color: var(--muted); margin: 2px 0 12px; max-width: 420px; }
+.xp-chk { display: flex; align-items: center; gap: 8px; font-size: 13px; margin-bottom: 14px; cursor: pointer; }
+.xp-chk small { color: var(--faint); }
+.xp-lay { display: flex; flex-direction: column; gap: 8px; margin: 2px 0 12px; max-width: 440px; }
+.xp-lay label { display: grid; grid-template-columns: auto 1fr; column-gap: 8px; align-items: start; font-size: 13px; cursor: pointer; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; }
+.xp-lay label:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
+.xp-lay small { grid-column: 2; color: var(--muted); font-size: 11.5px; line-height: 1.4; margin-top: 2px; }
+.xp-sub { font-size: 12px; color: var(--muted); margin: 0 0 8px; }
+.xp-lay { max-height: 52vh; overflow: auto; }
+.xp-qty .num { width: 90px; margin-left: 6px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--input); color: var(--text); font: inherit; }
+.xp-chk[hidden] { display: none; }
+
+/* ⬆ Import review */
+.im-box { width: min(620px, 92vw); }
+.nl-prompt-label small { font-weight: 500; color: var(--faint); margin-left: 6px; }
+.im-sheets { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; font-size: 12.5px; }
+.im-sheets span { color: var(--muted); }
+.im-stats { display: flex; gap: 12px; font-size: 12px; font-weight: 700; margin-bottom: 6px; }
+.im-same { color: var(--ok); } .im-close { color: #b45309; } .im-new { color: var(--accent); }
+:root[data-theme="dark"] .im-close { color: #fbbf24; }
+.im-list { max-height: 38vh; overflow: auto; border: 1px solid var(--line); border-radius: 8px; margin-bottom: 12px; }
+.im-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 5px 10px; font-size: 12.5px; border-bottom: 1px solid var(--line2); }
+.im-row:last-child { border-bottom: 0; }
+.im-row > :last-child { color: var(--muted); }
+.im-new .im-nm { font-weight: 600; }
+.im-close label { cursor: pointer; color: #b45309; }
+:root[data-theme="dark"] .im-close label { color: #fbbf24; }
+.im-pick { display: flex; align-items: center; gap: 6px; min-width: 0; flex-wrap: wrap; }
+.im-ic { width: 14px; text-align: center; font-weight: 700; }
+.im-same .im-ic, .im-remembered .im-ic { color: var(--ok); } .im-close .im-ic { color: #b45309; } .im-new .im-ic { color: var(--accent); }
+.im-in { flex: 1; min-width: 140px; padding: 3px 7px; border: 1px solid var(--line); border-radius: 6px; background: var(--input); color: var(--text); font: inherit; font-size: 12.5px; }
+.im-close .im-in { border-color: color-mix(in srgb, #f59e0b 60%, var(--line)); }
+.im-hint { border: 1px dashed var(--accent); background: var(--accent-soft); color: var(--accent); border-radius: 6px; padding: 1px 7px; font-size: 11.5px; cursor: pointer; }
+.im-row { align-items: center; }

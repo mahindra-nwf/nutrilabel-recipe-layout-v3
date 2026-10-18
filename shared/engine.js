@@ -141,6 +141,79 @@ NL.flatten = function (model, calc, rootId) {
   return Object.entries(out).filter(([, g]) => g > 0).sort((a, b) => b[1] - a[1]);
 };
 
+// ---- ingredient name matching for imports (no AI; runs on this computer) ----
+// Compares a name from a file with the library: brand names and codes are ignored, preparation words
+// (grated, diced…) don't count, raw / cooked / dried must agree, rare words weigh more than common ones,
+// one-letter typos and plurals are forgiven. Names a chef has confirmed before are remembered (aliases).
+NL.ALIAS_KEY = 'nlv3_ing_aliases';
+NL.aliases = (() => { try { return JSON.parse(localStorage.getItem(NL.ALIAS_KEY)) || {}; } catch { return {}; } })();
+NL.rememberAlias = (fileName, ingId) => { const k = NL.matchKey(fileName); if (!k || !ingId) return; NL.aliases[k] = ingId; try { localStorage.setItem(NL.ALIAS_KEY, JSON.stringify(NL.aliases)); } catch { } };
+NL.matchKey = t => String(t ?? '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+(() => {
+  const PREP = new Set('grated minced chopped diced sliced shredded peeled finely fine strip cubed julienne crushed melted softened cold hot warm strained washed trimmed boneless skinless cut mm inch any brand various shape size plain halved quartered pitted seeded stemmed rinsed drained'.split(' '));
+  const STATE = { raw: 'raw', fresh: 'raw', cooked: 'cooked', fried: 'cooked', roasted: 'cooked', baked: 'cooked', grilled: 'cooked', smoked: 'cooked', toasted: 'cooked', dry: 'dry', dried: 'dry', dehydrated: 'dry', powder: 'dry', powdered: 'dry', granulated: 'dry' };
+  const ABBR = { bs: ['boneless', 'skinless'], evoo: ['extra', 'virgin', 'olive', 'oil'], ap: ['all', 'purpose'], msg: ['msg'] };
+  // common food synonyms (general kitchen vocabulary, not specific to one file)
+  const SYN = [[/\b(green|spring) onions?\b/g, 'scallion'], [/\bprawns?\b/g, 'shrimp'], [/\bcorn ?flour\b/g, 'cornstarch'], [/\bcapsicums?\b/g, 'bell pepper'], [/\baubergines?\b/g, 'eggplant'],
+    [/\bcourgettes?\b/g, 'zucchini'], [/\bcoriander leaf|cilantro\b/g, 'cilantro'], [/\bgarbanzo beans?\b/g, 'chickpea'], [/\bcaster sugar|white sugar|table sugar\b/g, 'sugar'], [/\bwhole eggs?\b/g, 'egg whole'],
+    [/\bsoya\b/g, 'soy'], [/\bshoyu\b/g, 'soy sauce'], [/\bbread ?crumbs?\b/g, 'breadcrumbs']];
+  const single = w => w.length > 3 && w.endsWith('ies') ? w.slice(0, -3) + 'y' : w.length > 3 && w.endsWith('oes') ? w.slice(0, -2) : w.length > 3 && w.endsWith('s') && !w.endsWith('ss') && !w.endsWith('us') ? w.slice(0, -1) : w;
+  const lev = (a, b) => { if (Math.abs(a.length - b.length) > 2) return 9; const d = Array.from({ length: a.length + 1 }, (_, i) => [i]); for (let j = 1; j <= b.length; j++) d[0][j] = j; for (let i = 1; i <= a.length; i++) for (let j = 1; j <= b.length; j++) d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)); return d[a.length][b.length]; };
+  const near = (a, b) => a === b || (a.length >= 5 && b.length >= 5 && lev(a, b) <= (Math.min(a.length, b.length) >= 8 ? 2 : 1));
+  let cache = null;
+  const index = () => {
+    if (cache && cache.n === NL.INGREDIENTS.length) return cache;
+    const raw = t => NL.matchKey(t).split(' ').filter(Boolean).map(single);
+    const nameWords = new Set(NL.INGREDIENTS.flatMap(i => raw(i.name)));
+    // vendor words that are not food words are treated as brands (e.g. "sysco", "nikken"); "noodle" in "Sun Noodle" stays a food word
+    const brands = new Set(NL.INGREDIENTS.flatMap(i => raw(i.vendor || '')).filter(w => !nameWords.has(w)));
+    ['lkk', 'kikkoman', 'foreway', 'takii', 'essentia', 'kerry', 'novazyme', 'novozyme', 'bing', 'mr', 'sb', 'lee', 'kum'].forEach(w => brands.add(w));
+    const toks = t => {
+      const out = [], states = new Set();
+      let text = NL.matchKey(String(t).replace(/&/g, '')); for (const [re, to] of SYN) text = text.replace(re, to);
+      for (let w of raw(text)) {
+        if (/\d/.test(w)) continue;                       // codes and sizes: r2, ag300, 9-11
+        for (const x of ABBR[w] || [w]) {
+          if (STATE[x]) { states.add(STATE[x]); continue; }
+          if (PREP.has(x) || brands.has(x)) continue;
+          out.push(x);
+        }
+      }
+      return { words: [...new Set(out)], states };
+    };
+    const lib = NL.INGREDIENTS.map(i => ({ ing: i, ...toks(i.name), compact: NL.matchKey(i.name).replace(/ /g, '') }));
+    const df = {}; lib.forEach(l => l.words.forEach(w => { df[w] = (df[w] || 0) + 1; }));
+    const vocab = Object.keys(df), N = lib.length, wt = w => Math.log(1 + N / (df[w] || 1));
+    return (cache = { n: NL.INGREDIENTS.length, lib, vocab, wt, toks });
+  };
+  // returns { kind: 'remembered' | 'same' | 'close' | 'new', ing, score }
+  NL.matchName = function (name) {
+    const key = NL.matchKey(name); if (!key) return { kind: 'new', score: 0 };
+    const aid = NL.aliases[key]; if (aid && NL.ingMap[aid]) return { kind: 'remembered', ing: NL.ingMap[aid], score: 1 };
+    const { lib, vocab, wt, toks } = index();
+    const exact = lib.find(l => NL.matchKey(l.ing.name) === key || l.compact === key.replace(/ /g, '')); // "corn starch" = "Cornstarch"
+    if (exact) return { kind: 'same', ing: exact.ing, score: 1 };
+    const f = toks(name);
+    const known = f.words.filter(w => vocab.some(v => near(w, v)));       // words the library knows; unknown words (brands, origins) don't count
+    if (!known.length) return { kind: 'new', score: 0 };
+    let best = null, bs = 0;
+    for (const l of lib) {
+      if (!l.words.length) continue;
+      const hitF = known.filter(w => l.words.some(v => near(w, v))), hitL = l.words.filter(v => known.some(w => near(w, v)));
+      if (!hitF.length) continue;
+      const sum = a => a.reduce((t, w) => t + wt(w), 0);
+      const P = sum(hitF) / sum(known), R = sum(hitL) / sum(l.words);
+      let sc = 2 * P * R / (P + R);
+      // raw / cooked / dried must agree: a cooked or dried library item needs the file to say so too
+      const fs_ = [...f.states].filter(x => x !== 'raw'), ls = [...l.states].filter(x => x !== 'raw');
+      if (fs_.some(x => !ls.includes(x)) || ls.some(x => !fs_.includes(x))) sc *= 0.5;
+      if (f.states.has('raw') && ls.length) sc *= 0.5;
+      if (sc > bs) { bs = sc; best = l.ing; }
+    }
+    return bs >= 0.75 ? { kind: 'close', ing: best, score: bs } : { kind: 'new', score: bs, hint: bs >= 0.65 ? best : null };
+  };
+})();
+
 NL.refName = function (model, ref) {
   const [t, id] = ref.split(':');
   if (t === 'ing') return NL.ingMap[id]?.name || id;

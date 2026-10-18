@@ -21,6 +21,8 @@
     topId = id;
     boardCardsEl.querySelectorAll('.rcard').forEach(el => { el.style.zIndex = zOf(el.dataset.id); });
   };
+  // ⚙ Settings: each setting registers how to read itself and put itself back, so Cancel can undo a session
+  const settingsReg = [];
   const flipIn = {}; // card id -> 1 while its flip-in animation should play
   const fwErr = {}; // card id -> message while the typed final weight is invalid
   const amtErr = {}; // 'card:row' -> message while a typed ingredient weight is invalid
@@ -53,7 +55,35 @@
   // The retailer list is kept per browser (like favorites); each recipe tab checks every retailer
   // except the ones unticked for it (S.retailOff). A ban matches whole words of an ingredient's name.
   const RETAIL = 'nlv3_retailers';
-  const readRetail = () => { try { return JSON.parse(localStorage.getItem(RETAIL)) || []; } catch { return []; } };
+  // split pasted / typed text into separate items: one per line, or on commas / semicolons
+  // (not inside brackets, so "Sodium Sulfosuccinate (DSS)" stays whole); bullets and numbers are dropped.
+  // A text that is exactly a library ingredient name (e.g. "Garlic, minced") is kept as one item.
+  const isLibName = t => NL.INGREDIENTS.some(i => i.name.toLowerCase() === t.trim().toLowerCase());
+  function splitItems(txt) {
+    if (isLibName(txt)) return [txt.trim()];
+    const out = []; let cur = '', depth = 0;
+    const multiline = /[\r\n]/.test(txt.trim());
+    for (const ch of txt) {
+      if ('([{'.includes(ch)) depth++;
+      else if (')]}'.includes(ch)) depth = Math.max(0, depth - 1);
+      if (ch === '\n' || ch === '\r' || ((ch === ',' || ch === ';') && depth === 0 && (!multiline || ch === ';'))) { out.push(cur); cur = ''; continue; }
+      cur += ch;
+    }
+    out.push(cur);
+    return out.map(p => p.replace(/^\s*(?:[-*•·]|\d+[.)])\s*/, '').trim()).filter(Boolean);
+  }
+  // read the list; entries saved as one long "a, b, c" item are split into separate items (once)
+  const readRetail = () => {
+    let list; try { list = JSON.parse(localStorage.getItem(RETAIL)) || []; } catch { return []; }
+    let changed = false;
+    for (const r of list) {
+      const bans = [];
+      for (const b of r.bans) for (const t of splitItems(b)) if (!bans.some(x => x.toLowerCase() === t.toLowerCase())) bans.push(t);
+      if (bans.length !== r.bans.length || bans.some((b, k) => b !== r.bans[k])) { r.bans = bans; changed = true; }
+    }
+    if (changed) try { localStorage.setItem(RETAIL, JSON.stringify(list)); } catch { }
+    return list;
+  };
   const saveRetail = list => { try { localStorage.setItem(RETAIL, JSON.stringify(list)); } catch { } };
   const retailOn = r => !(S.retailOff || []).includes(r.id);
   const reEsc = t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -565,12 +595,14 @@
   const PREFS = 'nlv3_sheet_prefs';
   const prefs = { links: 'jump', width: 'full' };
   try { Object.assign(prefs, JSON.parse(localStorage.getItem(PREFS)) || {}); } catch { }
+  if (prefs.links === 'lines') prefs.links = 'jump'; // the Lines option was removed
   function applyPrefs() {
     svEl.className = `sheetview lk-${prefs.links} w-${prefs.width}`;
-    svEl.querySelectorAll('[data-svlinks]').forEach(b => b.classList.toggle('on', b.dataset.svlinks === prefs.links));
-    svEl.querySelectorAll('[data-svwidth]').forEach(b => b.classList.toggle('on', b.dataset.svwidth === prefs.width));
+    document.querySelectorAll('[data-svlinks]').forEach(b => b.classList.toggle('on', b.dataset.svlinks === prefs.links));
+    document.querySelectorAll('[data-svwidth]').forEach(b => b.classList.toggle('on', b.dataset.svwidth === prefs.width));
   }
   function savePrefs() { try { localStorage.setItem(PREFS, JSON.stringify(prefs)); } catch { } applyPrefs(); }
+  settingsReg.push({ get: () => ({ ...prefs }), set: p => { Object.assign(prefs, p); savePrefs(); render(); } });
   applyPrefs();
 
   // saved order first, then any new cards; with no saved order, final assembly then its sub-assemblies depth-first
@@ -600,26 +632,7 @@
     render(); commit();
     cardsEl.querySelector(`[data-id="${id}"]`)?.scrollIntoView({ block: 'nearest' });
   }
-  function drawSheetLinks() {
-    if (prefs.links !== 'lines') { svLinksEl.innerHTML = ''; return; }
-    const box = svInnerEl.getBoundingClientRect(); let out = '', k = 0;
-    for (const [pid, a] of Object.entries(S.asm)) {
-      const pEl = svCardsEl.querySelector(`[data-id="${pid}"]`); if (!pEl) continue;
-      const pr = pEl.getBoundingClientRect();
-      for (const it of a.items) {
-        const sid = subIdOf(it.ref), cEl = sid && A(sid) && svCardsEl.querySelector(`[data-id="${sid}"]`); if (!cEl) continue;
-        const row = pEl.querySelector(`tr[data-sub="${sid}"]`), rr = row && !a.collapsed ? row.getBoundingClientRect() : null, cr = cEl.getBoundingClientRect();
-        const x1 = pr.left - box.left, y1 = (rr ? rr.top + rr.height / 2 : pr.top + 34) - box.top;
-        const x2 = cr.left - box.left, y2 = cr.top - box.top + 30;
-        const g = 34 + (k++ % 4) * 14, c1 = x1 - g, c2 = x2 - g, col = colorOf(sid);
-        const d = `M${x1},${y1} C${c1},${y1} ${c2},${y2} ${x2},${y2}`, mx = (x1 + 3 * c1 + 3 * c2 + x2) / 8, my = (y1 + y2) / 2;
-        out += `<g class="lk" data-link="${pid}:${sid}"><path class="link" d="${d}" stroke="${col}"/><path class="link-hit" d="${d}"/><circle class="link-dot" cx="${x1}" cy="${y1}" r="5" fill="${col}"/><circle class="link-dot" cx="${x2}" cy="${y2}" r="5" fill="${col}"/>
-          <g class="lk-cut" data-cut="${pid}:${sid}" transform="translate(${mx},${my})" style="--lc:${col}"><title>Remove link: ${NL.esc(A(sid).name)} → ${NL.esc(a.name)}</title><circle r="13"/><text y="1">✂</text></g></g>`;
-      }
-    }
-    svLinksEl.innerHTML = out;
-  }
-  new ResizeObserver(() => withSide('left', () => { if (view === 'sheet' && prefs.links === 'lines') drawSheetLinks(); })).observe(svCardsEl);
+  function drawSheetLinks() { svLinksEl.innerHTML = ''; } // the sheet shows links as jump links or an indent rail, not lines
   // cards added while in the sheet get a free spot on the board the next time it is shown
   function placeNewCards() {
     const ids = Object.keys(S.asm).filter(id => A(id)._place); if (!ids.length) return false;
@@ -850,9 +863,611 @@
     const list = readRetail();
     $('#retailList').innerHTML = list.length ? list.map(r => `<div class="rt ${retailOn(r) ? '' : 'off'}">
         <div class="rt-row"><input type="checkbox" data-rton="${r.id}" ${retailOn(r) ? 'checked' : ''} title="Check this recipe against ${NL.esc(r.name)}"><button class="rt-nm" data-rtopen="${r.id}" title="Show or edit the ingredients ${NL.esc(r.name)} does not allow">${retailOpen.has(r.id) ? '▾' : '▸'} ${NL.esc(r.name)}</button><span class="faint">${r.bans.length} not allowed</span><button class="fav-b x" data-rtdel="${r.id}" title="Remove this retailer">×</button></div>
-        ${retailOpen.has(r.id) ? `<div class="rt-bans">${r.bans.map((b, k) => `<span class="rt-chip">${NL.esc(b)}<button data-rtban="${r.id}:${k}" title="Remove">×</button></span>`).join('')}<input class="txt rt-in" data-rtadd="${r.id}" list="rtNames" placeholder="Type an ingredient, press Enter"></div>` : ''}
+        ${retailOpen.has(r.id) ? `<div class="rt-bans">${r.bans.map((b, k) => `<span class="rt-chip">${NL.esc(b)}${(o => o.length ? `<span class="rt-also" title="Also not allowed by: ${NL.esc(o.join(', '))}">+${o.length}</span>` : '')(list.filter(x => x !== r && x.bans.some(y => y.toLowerCase() === b.toLowerCase())).map(x => x.name))}<button data-rtban="${r.id}:${k}" title="Remove">×</button></span>`).join('')}<input class="txt rt-in" data-rtadd="${r.id}" list="rtNames" placeholder="Type an ingredient, press Enter"></div>` : ''}
       </div>`).join('') + `<datalist id="rtNames">${[...new Set(NL.INGREDIENTS.map(i => i.name))].map(n => `<option value="${NL.esc(n)}">`).join('')}</datalist><div class="fav-empty">Ticked retailers are checked in this recipe.</div>`
       : '<div class="fav-empty">Add a retailer (＋) and the ingredients it does not allow. Cards flag them with ⛔.</div>';
+  }
+
+  // ---------- ⬇ Export to Excel (.xlsx) ----------
+  // One workbook per recipe tab: Summary, one sheet per card, Bill of materials, Nutrition.
+  // Weights use the chosen unit (Auto exports in g or oz so every column has one unit); costs are optional.
+  // SheetJS is loaded from cdnjs the first time someone exports.
+  const XLSX_URL = 'https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js'; // SheetJS + cell styles (colours, bold)
+  let xlsxLoading = null;
+  const loadXlsx = () => window.XLSX ? Promise.resolve(window.XLSX) : (xlsxLoading = xlsxLoading || new Promise((ok, fail) => {
+    const sc = document.createElement('script'); sc.src = XLSX_URL;
+    sc.onload = () => ok(window.XLSX); sc.onerror = () => { xlsxLoading = null; sc.remove(); fail(new Error('could not load SheetJS')); };
+    document.head.appendChild(sc);
+  }));
+  const XP_STYLES = ['template', 'card', 'production', 'costing', 'spec', 'detailed'];
+  const xpLayout = () => { try { const v = localStorage.getItem('nlv3_export_layout'); return XP_STYLES.includes(v) ? v : 'template'; } catch { return 'template'; } };
+  function exportDialog() {
+    useSide('left'); clearTimeout(typingT); commit();
+    if (!Object.keys(S.asm).length) return NL.toast('Nothing to export yet. Add a card first');
+    loadXlsx().catch(() => { }); // start loading while the dialog is open
+    const ov = document.createElement('div'); ov.className = 'nl-prompt-ov';
+    ov.innerHTML = `<form class="nl-prompt nif">
+      <div class="nl-prompt-label">Export to Excel</div>
+      <div class="xp-sub">Pick a style. Chefs can try each and keep the one that fits.</div>
+      <div class="xp-lay">
+        <label><input type="radio" name="layout" value="template" ${xpLayout() === 'template' ? 'checked' : ''}> <b>Company template</b><small>Like the team's recipe workbook: a recipe block per component, components summary, production totals (g / kg / lbs), Item &amp; cost sheet, Nutrition.</small></label>
+        <label><input type="radio" name="layout" value="card" ${xpLayout() === 'card' ? 'checked' : ''}> <b>Recipe card</b><small>One simple page per recipe: ingredients and amounts, yield, procedure, notes. No costs. For the kitchen.</small></label>
+        <label><input type="radio" name="layout" value="production" ${xpLayout() === 'production' ? 'checked' : ''}> <b>Production / batch sheet</b><small>What to make, in order, for a number of portions: scaled weights in g / kg / lb with check boxes. For the floor.</small></label>
+        <label><input type="radio" name="layout" value="costing" ${xpLayout() === 'costing' ? 'checked' : ''}> <b>Costing sheet</b><small>Cost per portion by component and by raw ingredient, packaging and labor, with % of cost.</small></label>
+        <label><input type="radio" name="layout" value="spec" ${xpLayout() === 'spec' ? 'checked' : ''}> <b>Spec / label sheet</b><small>Serving size, nutrition per serving and per 100 g, ingredient statement. For QA and the client.</small></label>
+        <label><input type="radio" name="layout" value="detailed" ${xpLayout() === 'detailed' ? 'checked' : ''}> <b>Detailed</b><small>Everything: a Summary, a sheet per card (pinned and From Final columns), Bill of materials, Nutrition.</small></label>
+      </div>
+      <label class="xp-chk xp-qty">Portions to make <input class="num" name="qty" inputmode="decimal" value="${(hasFinal() && A(S.root).scalePins?.[0]?.mode === 'portion' ? +A(S.root).scalePins[0].count : 100)}"></label>
+      <label class="xp-chk xp-cost"><input type="checkbox" name="costs" checked> Include costs <small>(untick to send a copy without prices)</small></label>
+      <div class="nl-prompt-btns"><button type="submit" class="btn primary">⬇ Export</button><button type="button" class="btn ghost nl-prompt-cancel">Cancel</button></div>
+    </form>`;
+    document.body.appendChild(ov);
+    const f = ov.querySelector('form'), close = () => ov.remove();
+    // show the quantity box for the production sheet, and the costs box only where costs are optional
+    const sync = () => { const v = f.elements.layout.value; f.querySelector('.xp-qty').hidden = v !== 'production'; f.querySelector('.xp-cost').hidden = !['template', 'detailed'].includes(v); };
+    f.addEventListener('change', sync); sync();
+    f.onsubmit = e => {
+      e.preventDefault();
+      const layout = f.elements.layout.value, costs = f.elements.costs.checked, qty = NL.parseNum(f.elements.qty.value);
+      if (layout === 'production' && !(qty > 0)) return NL.toast('Enter how many portions to make');
+      try { localStorage.setItem('nlv3_export_layout', layout); } catch { }
+      close(); exportXlsx({ costs, layout, qty });
+    };
+    ov.querySelector('.nl-prompt-cancel').onclick = close;
+    ov.addEventListener('pointerdown', e => { if (e.target === ov) close(); });
+    ov.addEventListener('keydown', e => { if (e.key === 'Escape') close(); });
+    f.querySelector('button[type=submit]').focus();
+  }
+
+  // Company template: laid out like the team's recipe workbook (a product sheet per recipe + Item & cost sheet).
+  // Values only (no formulas): the app does the calculations, the file shows what was built.
+  // Colours as in the template: green = entered in the app, orange = calculated, grey = headers, peach = production.
+
+  // shared helpers for the styled exports: colours, a cell grid, sheet names, and recipe maths used by every style
+  function xlKit(X) {
+    const today = new Date().toISOString().slice(0, 10);
+    const C = { GREEN: 'C1F1C8', ORANGE: 'F1AB83', GREY: 'EFEFEF', PEACH: 'FAE3D6', LIGHT: 'D9F2D0', BLUE: 'DDEBF7' };
+    const line = { style: 'thin', color: { rgb: 'BFBFBF' } }, border = { top: line, bottom: line, left: line, right: line };
+    const st = (fill, o = {}) => ({ ...(fill ? { fill: { patternType: 'solid', fgColor: { rgb: fill } } } : {}), ...(o.bold || o.size ? { font: { bold: !!o.bold, ...(o.size ? { sz: o.size } : {}) } } : {}), ...(o.box ? { border } : {}), ...(o.wrap ? { alignment: { wrapText: true, vertical: 'top' } } : {}), ...(o.fmt ? { numFmt: o.fmt } : {}) });
+    const F = { G2: '0.00', G3: '0.000', USD: '"$"#,##0.00', USD5: '"$"#,##0.00000', PCT: '0.0%', P0: '0%' };
+    const r2 = v => v == null || !isFinite(v) ? null : Math.round(v * 100) / 100;
+    const xb = X.utils.book_new(), used = new Set();
+    const sheetName = n => { const b = String(n).replace(/[\\/?*[\]:]/g, ' ').trim().slice(0, 28) || 'Sheet'; let name = b, k = 2; while (used.has(name.toLowerCase())) name = `${b.slice(0, 25)} ${k++}`; used.add(name.toLowerCase()); return name; };
+    const grid = () => {
+      const cells = {}; let mr = 0, mc = 0;
+      return {
+        put(r, c, v, sty) {
+          if ((v === null || v === undefined || v === '') && !sty) return;
+          const cell = v === null || v === undefined || v === '' ? { t: 's', v: '' } : typeof v === 'number' ? { t: 'n', v } : { t: 's', v: String(v) };
+          if (sty) { cell.s = sty; if (sty.numFmt) cell.z = sty.numFmt; }
+          cells[X.utils.encode_cell({ r, c })] = cell; mr = Math.max(mr, r); mc = Math.max(mc, c);
+        },
+        sheet(widths) { const ws = { ...cells, '!ref': X.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: mr, c: mc } }) }; ws['!cols'] = widths.map(w => ({ wch: w })); return ws; },
+      };
+    };
+    const add = (g, name, widths) => X.utils.book_append_sheet(xb, g.sheet(widths), sheetName(name));
+    const cardCost = id => { const a = A(id); return cost[id].batch + (a.packaging || []).reduce((t, r) => t + (+r.cost || 0), 0) + laborOf(a); };
+    const costPerG = it => { const sid = subIdOf(it.ref); if (sid) return cost[sid] ? cost[sid].perG : null; const p = NL.price(it.ref.slice(4)); return p == null ? null : p / 1000; };
+    const vName = id => { const a = A(id); return varsOf(a) ? varInUse(a).name : ''; };
+    const itemName = it => { const sid = subIdOf(it.ref); return sid ? (A(sid)?.name || '(missing)') : (NL.ingMap[it.ref.slice(4)]?.name || it.ref); };
+    const tops = () => hasFinal() ? [S.root] : Object.keys(S.asm).filter(id => !parentsOf(id).length);
+    // how many batches of each card one batch of 'top' uses
+    const share = top => { const sh = { [top]: 1 }; (function walk(id, f) { for (const it of A(id).items) { const sid = subIdOf(it.ref); if (!sid || !A(sid) || !(calc[sid].yielded > 0)) continue; const sf = (+it.amount || 0) * f / calc[sid].yielded; sh[sid] = (sh[sid] || 0) + sf; walk(sid, sf); } })(top, 1); return sh; };
+    // components first (deepest first), the top card last
+    const postOrder = top => { const out = [], seen = new Set(); (function post(id) { if (seen.has(id)) return; seen.add(id); for (const it of A(id).items) { const sid = subIdOf(it.ref); if (sid && A(sid)) post(sid); } out.push(id); })(top); return out; };
+    const title = hasFinal() ? A(S.root).name : (S.draftName || 'Untitled assembly');
+    const save = suffix => { const file = `${title.replace(/[\\/:*?"<>|]/g, ' ').trim() || 'Recipe'} - ${suffix ? suffix + ' - ' : ''}${today}.xlsx`; X.writeFile(xb, file); NL.toast('Exported ' + file); };
+    return { today, C, st, F, r2, xb, sheetName, grid, add, cardCost, costPerG, vName, itemName, tops, share, postOrder, title, save };
+  }
+
+  // Recipe card: one simple sheet per card (components first): ingredients and amounts, yield, procedure, notes. No costs.
+  function exportCard(X) {
+    const K = xlKit(X), { C, st, F, r2 } = K;
+    const order = []; for (const top of K.tops()) for (const id of K.postOrder(top)) if (!order.includes(id)) order.push(id);
+    for (const id of order) {
+      const g = K.grid(), a = A(id), c = calc[id]; let r = 0;
+      g.put(r, 0, a.name + (K.vName(id) ? ' (' + K.vName(id) + ')' : ''), st(null, { bold: true, size: 16 })); r++;
+      g.put(r, 0, id === S.root ? 'Final assembly · one portion' : 'Sub-assembly'); g.put(r, 2, 'Printed ' + K.today); r += 2;
+      g.put(r, 0, 'Makes', st(null, { bold: true })); g.put(r, 1, NL.ws(c.yielded, 1)); g.put(r, 2, 'from ' + NL.ws(c.batch, 1) + ' · yield ' + NL.yieldPct(a.yieldLoss) + '%'); r += 2;
+      ['Ingredient', 'Amount', 'Unit'].forEach((h, k) => g.put(r, k, h, st(C.GREY, { bold: true, box: true }))); r++;
+      for (const it of a.items) {
+        const amt = +it.amount || 0, u = NL.unitFor(amt), sid = subIdOf(it.ref);
+        g.put(r, 0, K.itemName(it) + (sid ? '  (see its card)' : ''), st(null, { box: true }));
+        g.put(r, 1, +(amt / NL.UNITS[u]).toFixed(u === 'g' ? 1 : 3), st(null, { box: true })); g.put(r, 2, u, st(null, { box: true })); r++;
+      }
+      for (const p of a.packaging || []) { g.put(r, 0, 'Packaging: ' + (p.name || ''), st(null, { box: true })); g.put(r, 1, p.weight ?? null, st(null, { box: true })); g.put(r, 2, p.weight == null ? '' : 'g', st(null, { box: true })); r++; }
+      r++;
+      const steps = (a.steps || []).filter(t => String(t).trim());
+      if (steps.length) { g.put(r, 0, 'Procedure', st(null, { bold: true })); r++; steps.forEach((t, k) => { g.put(r, 0, (k + 1) + '. ' + t, st(null, { wrap: true })); r++; }); r++; }
+      if ((a.notes || '').trim()) { g.put(r, 0, 'Notes', st(null, { bold: true })); r++; g.put(r, 0, a.notes, st(null, { wrap: true })); }
+      K.add(g, a.name, [46, 12, 8]);
+    }
+    K.save('Recipe cards');
+  }
+
+  // Production / batch sheet: for N portions of the Final, what to make in what order, scaled weights in g / kg / lb, with check boxes.
+  function exportProduction(X, N) {
+    const K = xlKit(X), { C, st, F, r2 } = K;
+    for (const top of K.tops()) {
+      const g = K.grid(), sh = K.share(top), root = A(top), isFinal = top === S.root; let r = 0, step = 0;
+      g.put(r, 0, 'Production sheet: ' + root.name, st(null, { bold: true, size: 16 })); r++;
+      g.put(r, 0, 'Make'); g.put(r, 1, N, st(C.GREEN, { bold: true, box: true, fmt: '#,##0.##' })); g.put(r, 2, isFinal ? 'portions of ' + NL.ws(calc[top].yielded, 1) : 'batches'); g.put(r, 5, 'Date ' + K.today); r += 2;
+      for (const id of K.postOrder(top)) {
+        const a = A(id), c = calc[id], f = (sh[id] || 0) * N; step++;
+        g.put(r, 0, 'Step ' + step + ': ' + (id === top ? (isFinal ? 'Assemble / pack ' : 'Make ') : 'Make ') + a.name, st(C.BLUE, { bold: true })); for (let k = 1; k <= 5; k++) g.put(r, k, '', st(C.BLUE));
+        r++;
+        g.put(r, 0, id === top && isFinal ? N + ' portions' : 'Batch ' + NL.ws(c.batch * f, 2) + ' → yields ' + NL.ws(c.yielded * f, 2) + ' (' + NL.yieldPct(a.yieldLoss) + '%)', st(null, {})); r++;
+        ['Ingredient', 'g', 'kg', 'lb', 'Done ✓'].forEach((h, k) => g.put(r, k, h, st(C.GREY, { bold: true, box: true }))); r++;
+        for (const it of a.items) {
+          const x = (+it.amount || 0) * f, sid = subIdOf(it.ref);
+          g.put(r, 0, K.itemName(it) + (sid ? '  (from step above)' : ''), st(null, { box: true }));
+          g.put(r, 1, r2(x), st(C.PEACH, { box: true, fmt: '#,##0.00' })); g.put(r, 2, +(x / 1000).toFixed(3), st(C.PEACH, { box: true, fmt: F.G3 })); g.put(r, 3, +(x / 453.59237).toFixed(3), st(C.PEACH, { box: true, fmt: F.G3 })); g.put(r, 4, '☐', st(null, { box: true }));
+          r++;
+        }
+        for (const p of a.packaging || []) { g.put(r, 0, 'Packaging: ' + (p.name || ''), st(null, { box: true })); g.put(r, 1, p.weight == null ? null : r2(p.weight * f), st(C.PEACH, { box: true })); g.put(r, 4, '☐', st(null, { box: true })); r++; }
+        const steps = (a.steps || []).filter(t => String(t).trim());
+        if (steps.length) { g.put(r, 0, 'How: ' + steps.map((t, k) => (k + 1) + '. ' + t).join('  '), st(null, { wrap: true })); r++; }
+        r++;
+      }
+      K.add(g, 'Production ' + root.name, [48, 14, 12, 12, 9]);
+    }
+    K.save('Production x' + N);
+  }
+
+  // Costing sheet: cost per portion by component, by raw ingredient, packaging and labor, with % of cost.
+  function exportCosting(X) {
+    const K = xlKit(X), { C, st, F } = K;
+    for (const top of K.tops()) {
+      const g = K.grid(), sh = K.share(top), root = A(top); let r = 0;
+      // per portion: raw ingredients (through every sub-assembly) + packaging + labor of every card
+      const flat = NL.flatten(S, calc, top);
+      const ingRows = flat.map(([iid, x]) => { const p = NL.price(iid); return { name: NL.ingMap[iid]?.name || iid, vendor: NL.ingMap[iid]?.vendor || '', g: x, cost: p == null ? null : x / 1000 * p }; });
+      const pkRows = [], lbRows = [];
+      for (const [id, sf] of Object.entries(sh)) { for (const p of A(id).packaging || []) pkRows.push({ name: (p.name || 'Packaging') + (id === top ? '' : ' (' + A(id).name + ')'), cost: p.cost == null ? null : p.cost * sf }); const l = laborOf(A(id)) * sf; if (l > 0) lbRows.push({ name: 'Labor: ' + A(id).name, cost: l }); }
+      const total = [...ingRows, ...pkRows, ...lbRows].reduce((t, x) => t + (x.cost || 0), 0) || 0;
+      g.put(r, 0, 'Costing: ' + root.name, st(null, { bold: true, size: 16 })); r++;
+      g.put(r, 0, 'Cost per ' + (top === S.root ? 'portion' : 'batch') + ' (ingredients, packaging and labor of every card)'); g.put(r, 3, total, st(C.ORANGE, { bold: true, box: true, fmt: F.USD })); r++;
+      g.put(r, 0, 'Exported ' + K.today); r += 2;
+      // by component (what the top card is made of)
+      g.put(r, 0, 'By component', st(null, { bold: true })); r++;
+      ['Component', 'Amount (g)', 'Cost', '% of cost'].forEach((h, k) => g.put(r, k, h, st(C.GREY, { bold: true, box: true }))); r++;
+      const comp = root.items.map(it => { const sid = subIdOf(it.ref), amt = +it.amount || 0; let cst = sid ? (cost[sid] ? amt * cost[sid].perG : null) : rowCost(it)?.v ?? null; if (sid) { const s2 = K.share(sid); for (const [cid, sf] of Object.entries(s2)) { const k2 = amt / (calc[sid].yielded || 1) * sf; cst = (cst || 0) + (A(cid).packaging || []).reduce((t, p) => t + (+p.cost || 0), 0) * k2 + laborOf(A(cid)) * k2; } } return { name: K.itemName(it) + (sid ? ' (sub-assembly)' : ''), g: amt, cost: cst }; });
+      for (const p of root.packaging || []) comp.push({ name: 'Packaging: ' + (p.name || ''), g: p.weight, cost: p.cost ?? null });
+      if (laborOf(root) > 0) comp.push({ name: 'Labor', g: null, cost: laborOf(root) });
+      for (const x of comp) { g.put(r, 0, x.name, st(null, { box: true })); g.put(r, 1, x.g == null ? null : K.r2(x.g), st(null, { box: true, fmt: F.G2 })); g.put(r, 2, x.cost, st(C.ORANGE, { box: true, fmt: F.USD5 })); g.put(r, 3, total > 0 && x.cost != null ? x.cost / total : null, st(null, { box: true, fmt: F.PCT })); r++; }
+      r++;
+      // by raw ingredient, most expensive first
+      g.put(r, 0, 'By raw ingredient (most expensive first)', st(null, { bold: true })); r++;
+      ['Ingredient', 'Vendor', 'Amount (g)', 'Price per kg', 'Cost', '% of cost'].forEach((h, k) => g.put(r, k, h, st(C.GREY, { bold: true, box: true }))); r++;
+      for (const x of [...ingRows].sort((a, b) => (b.cost ?? -1) - (a.cost ?? -1))) { const p = x.g > 0 && x.cost != null ? x.cost / x.g * 1000 : null; g.put(r, 0, x.name, st(null, { box: true })); g.put(r, 1, x.vendor, st(null, { box: true })); g.put(r, 2, K.r2(x.g), st(null, { box: true, fmt: F.G2 })); g.put(r, 3, p, st(null, { box: true, fmt: F.USD })); g.put(r, 4, x.cost, st(C.ORANGE, { box: true, fmt: F.USD5 })); g.put(r, 5, total > 0 && x.cost != null ? x.cost / total : null, st(null, { box: true, fmt: F.PCT })); r++; }
+      for (const x of [...pkRows, ...lbRows]) { g.put(r, 0, x.name, st(null, { box: true })); g.put(r, 4, x.cost, st(C.ORANGE, { box: true, fmt: F.USD5 })); g.put(r, 5, total > 0 && x.cost != null ? x.cost / total : null, st(null, { box: true, fmt: F.PCT })); r++; }
+      g.put(r, 0, 'Total', st(null, { bold: true, box: true })); g.put(r, 4, total, st(C.ORANGE, { bold: true, box: true, fmt: F.USD })); g.put(r, 5, total > 0 ? 1 : null, st(null, { box: true, fmt: F.PCT })); r += 2;
+      const missing = ingRows.filter(x => x.cost == null).map(x => x.name);
+      if (missing.length) { g.put(r, 0, 'No price yet (not in the total): ' + missing.join(', '), st(C.ORANGE, { wrap: true })); r++; }
+      // per pinned scaling on the top card
+      const pins = root.scalePins || [];
+      if (pins.length) { r++; g.put(r, 0, 'For each pinned scaling', st(null, { bold: true })); r++; ['Scaling', 'Cost'].forEach((h, k) => g.put(r, k, h, st(C.GREY, { bold: true, box: true }))); r++; for (const p of pins) { g.put(r, 0, pinLabel(p), st(null, { box: true })); g.put(r, 1, total * pinFactor(p, calc[top], baseTotal(root)), st(C.ORANGE, { box: true, fmt: F.USD })); r++; } }
+      K.add(g, 'Costing ' + root.name, [44, 20, 13, 13, 13, 11]);
+    }
+    K.save('Costing');
+  }
+
+  // Spec / label sheet: product facts, nutrition per portion and per 100 g, ingredient statement.
+  function exportSpec(X) {
+    const K = xlKit(X), { C, st, F } = K;
+    for (const top of K.tops()) {
+      const g = K.grid(), a = A(top), c = calc[top], isFinal = top === S.root, serving = isFinal ? c.yielded : 100; let r = 0;
+      g.put(r, 0, 'Product specification: ' + a.name, st(null, { bold: true, size: 16 })); r++;
+      g.put(r, 0, 'Exported ' + K.today + ' · values from the ingredient library; verify before regulatory use'); r += 2;
+      const facts = [['Product', a.name], ['Serving size', NL.fmt(serving, 1) + ' g' + (isFinal ? ' (one portion)' : '')], ['Calories per serving', Math.round(c.perG[0] * serving)], ['Components', a.items.filter(it => subIdOf(it.ref)).map(it => A(subIdOf(it.ref))?.name).filter(Boolean).join(', ') || '—'], ['Cooking / assembly loss', (+a.yieldLoss || 0) + '%']];
+      for (const [k, v] of facts) { g.put(r, 0, k, st(C.GREY, { bold: true, box: true })); g.put(r, 1, v, st(null, { box: true })); r++; }
+      r++;
+      g.put(r, 0, 'Nutrition Facts', st(null, { bold: true, size: 13 })); r++;
+      ['Nutrient', 'Per serving (' + NL.fmt(serving, 1) + ' g)', '% Daily Value', 'Per 100 g'].forEach((h, k) => g.put(r, k, h, st(C.GREY, { bold: true, box: true, wrap: true }))); r++;
+      NL.NUTRIENTS.forEach((n, k) => {
+        const d = n.unit === 'mg' || !n.unit ? 0 : 1, v = c.perG[k] * serving;
+        g.put(r, 0, (n.sub ? '   ' : '') + n.label + ' (' + (n.unit || 'kcal') + ')', st(null, { box: true, ...(n.sub ? {} : { bold: true }) }));
+        g.put(r, 1, +v.toFixed(d), st(null, { box: true })); g.put(r, 2, n.dv ? Math.round(v / n.dv * 100) / 100 : null, st(null, { box: true, fmt: F.P0 })); g.put(r, 3, +(c.perG[k] * 100).toFixed(d), st(null, { box: true })); r++;
+      });
+      r++;
+      g.put(r, 0, 'Ingredients', st(null, { bold: true })); r++;
+      g.put(r, 0, NL.flatten(S, calc, top).map(([iid]) => NL.ingMap[iid]?.name || iid).join(', '), st(null, { wrap: true })); r++;
+      g.put(r, 0, '(largest first, by weight before cooking)');
+      K.add(g, 'Spec ' + a.name, [34, 30, 14, 14]);
+    }
+    K.save('Spec sheet');
+  }
+  function exportTemplate(X, costs) {
+    const K = xlKit(X), { today, st, r2, xb, sheetName, grid, cardCost, costPerG, vName } = K;
+    const { GREEN, ORANGE, GREY, PEACH, LIGHT } = K.C, { G2, USD, USD5, PCT } = K.F;
+    const used_ings = new Map(); // id -> grams per portion, for the Item & cost sheet
+
+    // products: the Final assembly (or each top card when there is no Final)
+    const tops = hasFinal() ? [S.root] : Object.keys(S.asm).filter(id => !parentsOf(id).length);
+    for (const top of tops) {
+      const g = grid(), root = A(top), rc = calc[top], fp = root.scalePins || [];
+      // scale up: the first pinned column on the product card (500 portions), otherwise 1 portion
+      const p0 = fp[0], F = p0 ? pinFactor(p0, rc, baseTotal(root)) : 1;
+      const N = p0 && p0.mode === 'portion' ? +p0.count : +F.toFixed(4);
+      // share = how many batches of each card one portion uses (product card = 1)
+      const share = { [top]: 1 };
+      (function walk(id, f) { for (const it of A(id).items) { const sid = subIdOf(it.ref); if (!sid || !A(sid) || !(calc[sid].yielded > 0)) continue; const sf = (+it.amount || 0) * f / calc[sid].yielded; share[sid] = (share[sid] || 0) + sf; walk(sid, sf); } })(top, 1);
+      // order: components first (deepest first), product card last, as in the template
+      const order = [], seen = new Set();
+      (function post(id) { if (seen.has(id)) return; seen.add(id); for (const it of A(id).items) { const sid = subIdOf(it.ref); if (sid && A(sid)) post(sid); } order.push(id); })(top);
+
+      // header
+      g.put(0, 0, 'Snapshot from the NutriLabel Recipe Builder · ' + today + ' · calculations are done in the app', st(ORANGE, { bold: true }));
+      g.put(0, 5, root.name, st(GREEN, { bold: true, size: 14 }));
+      g.put(0, 12, '1 Portion', st(null, { bold: true }));
+      g.put(1, 0, 'version # ' + [wb.all().find(t => t.active)?.name, vName(top)].filter(Boolean).join(' · '));
+      g.put(3, 1, 'Scale up', st(null, { bold: true })); g.put(3, 3, N, st(GREEN, { fmt: G2, box: true })); g.put(3, 5, p0 && p0.mode === 'portion' ? 'Portions' : '× batch');
+      g.put(1, 7, 'For QA Reference.', st(null, { bold: true })); g.put(2, 7, 'Pouch item', st(GREY, { box: true })); g.put(2, 8, 'Pasteurization Target Temp', st(GREY, { box: true })); g.put(2, 9, 'Cooking Temp And Time', st(GREY, { box: true }));
+
+      // right: components summary (per portion)
+      let rr = 2;
+      g.put(rr, 11, 'Components (per portion)', st(GREY, { bold: true, box: true })); g.put(rr, 12, 'Quantity (g)', st(GREY, { bold: true, box: true })); if (costs) g.put(rr, 13, 'Cost', st(GREY, { bold: true, box: true })); g.put(rr, 14, 'oz', st(GREY, { bold: true, box: true }));
+      for (const it of root.items) {
+        const sid = subIdOf(it.ref); if (!sid || !A(sid)) continue; rr++;
+        const amt = +it.amount || 0;
+        g.put(rr, 11, A(sid).name, st(null, { box: true })); g.put(rr, 12, r2(amt), st(LIGHT, { fmt: G2, box: true }));
+        if (costs) g.put(rr, 13, cost[sid] ? amt * cost[sid].perG : null, st(ORANGE, { fmt: USD, box: true }));
+        g.put(rr, 14, +(amt / 28.349523125).toFixed(2), st(null, { fmt: G2, box: true }));
+      }
+      for (const r of root.packaging || []) { rr++; g.put(rr, 11, (r.name || 'Packaging') + ' cost per portion', st(null, { box: true })); if (costs) g.put(rr, 13, r.cost ?? null, st(ORANGE, { fmt: USD5, box: true })); }
+      if (costs) { rr++; g.put(rr, 11, 'Total cost', st(null, { bold: true, box: true })); g.put(rr, 13, cardCost(top), st(ORANGE, { bold: true, fmt: USD, box: true })); }
+
+      // left: one recipe block per card
+      let r = Math.max(6, rr + 2);
+      const blockTop = r;
+      for (const id of order) {
+        const a = A(id), c = calc[id], isTop = id === top, sc = (share[id] || 0) * F;
+        g.put(r, 1, 'Recipe', st(null, { bold: true })); g.put(r, 2, a.name + (vName(id) ? ' (' + vName(id) + ')' : ''), st(GREEN, { bold: true })); g.put(r, 3, isTop ? 'Final assembly' : 'Sub-assembly (WIP)', st(null, {}));
+        r++;
+        ['Grouping if needed', 'Ingredient', 'Quantity (g)', '% of Total', 'Cost Per G', 'Cost', 'Scale Up', '% of Total'].forEach((h, k) => g.put(r, 1 + k, h, st(GREY, { bold: true, box: true })));
+        r++;
+        for (const it of a.items) {
+          const sid = subIdOf(it.ref), amt = +it.amount || 0, cpg = costPerG(it);
+          if (!sid) used_ings.set(it.ref.slice(4), true);
+          g.put(r, 1, sid ? 'WIP' : '', st(null, { box: true }));
+          g.put(r, 2, sid ? (A(sid)?.name || '(missing)') : (NL.ingMap[it.ref.slice(4)]?.name || it.ref), st(GREEN, { box: true }));
+          g.put(r, 3, r2(amt), st(GREEN, { fmt: G2, box: true }));
+          g.put(r, 4, c.batch > 0 ? amt / c.batch : null, st(null, { fmt: PCT, box: true }));
+          g.put(r, 5, costs ? cpg : null, st(ORANGE, { fmt: USD5, box: true }));
+          g.put(r, 6, costs && cpg != null ? amt * cpg : null, st(ORANGE, { fmt: USD5, box: true }));
+          g.put(r, 7, r2(amt * sc), st(ORANGE, { fmt: G2, box: true }));
+          g.put(r, 8, c.batch > 0 ? amt / c.batch : null, st(null, { fmt: PCT, box: true }));
+          r++;
+        }
+        for (const p of a.packaging || []) {
+          g.put(r, 1, 'Pkg', st(null, { box: true })); g.put(r, 2, p.name || 'Packaging', st(GREEN, { box: true })); g.put(r, 3, p.weight == null ? null : r2(p.weight), st(GREEN, { fmt: G2, box: true }));
+          g.put(r, 6, costs ? p.cost ?? null : null, st(ORANGE, { fmt: USD5, box: true })); g.put(r, 7, p.weight == null ? null : r2(p.weight * sc), st(ORANGE, { fmt: G2, box: true }));
+          r++;
+        }
+        g.put(r, 2, 'Total', st(null, { bold: true })); g.put(r, 3, r2(c.batch), st(ORANGE, { bold: true, fmt: G2, box: true })); g.put(r, 4, c.batch > 0 ? 1 : null, st(null, { fmt: PCT }));
+        if (costs) g.put(r, 6, cardCost(id), st(ORANGE, { bold: true, fmt: USD5, box: true }));
+        g.put(r, 7, r2(c.batch * sc), st(ORANGE, { bold: true, fmt: G2, box: true })); g.put(r, 8, c.batch > 0 ? 1 : null, st(null, { fmt: PCT }));
+        r++;
+        g.put(r, 2, 'Output', st(null, { bold: true })); g.put(r, 3, r2(c.yielded), st(LIGHT, { fmt: G2, box: true }));
+        if (costs) { g.put(r, 5, 'cost per g after cook'); g.put(r, 6, cost[id].perG || null, st(ORANGE, { fmt: USD5, box: true })); }
+        r++;
+        g.put(r, 2, 'Yield %', st(null, { bold: true })); g.put(r, 6, NL.yieldPct(a.yieldLoss) / 100, st(GREEN, { fmt: '0%', box: true }));
+        r++;
+        g.put(r, 2, 'After cook with yield', st(null, { bold: true })); g.put(r, 3, r2(c.yielded), st(LIGHT, { fmt: G2, box: true })); g.put(r, 7, r2(c.yielded * sc), st(ORANGE, { fmt: G2, box: true }));
+        r++;
+        const steps = (a.steps || []).filter(t => String(t).trim());
+        g.put(r, 1, 'Procedure: ' + (steps.length ? steps.map((t, k) => (k + 1) + '. ' + t).join('  ') : ''), st(GREEN, { wrap: true }));
+        g.put(r, 5, 'Notes: ' + (a.notes || ''), st(GREEN, { wrap: true }));
+        if ((a.labor || []).length) { r++; g.put(r, 1, 'Labor: ' + a.labor.map(l => `${l.name || 'Task'} ${l.minutes ?? '?'} min × ${l.people ?? 1}${costs && l.rate != null ? ` @ $${l.rate}/h` : ''}`).join('; ')); }
+        r += 3;
+      }
+
+      // right: production totals (raw ingredients, scaled to the Scale up quantity)
+      let pr = blockTop;
+      g.put(pr, 10, 'Main Component Totals (per portion)', st(null, { bold: true })); g.put(pr, 12, 'Production', st(null, { bold: true })); pr++;
+      ['Ingredient order Totals', 'Quantity (g) for 1 portion', '% of Total', 'Scale up: G', 'Kg', 'Lbs'].forEach((h, k) => g.put(pr, 10 + k, h, st(k >= 3 ? PEACH : GREY, { bold: true, box: true }))); pr++;
+      const flat = NL.flatten(S, calc, top), raw = flat.reduce((t, [, x]) => t + x, 0) || 1;
+      for (const [iid, x] of flat) {
+        used_ings.set(iid, true);
+        g.put(pr, 10, NL.ingMap[iid]?.name || iid, st(null, { box: true })); g.put(pr, 11, r2(x), st(null, { fmt: G2, box: true })); g.put(pr, 12, x / raw, st(null, { fmt: PCT, box: true }));
+        g.put(pr, 13, r2(x * F), st(PEACH, { fmt: G2, box: true })); g.put(pr, 14, +(x * F / 1000).toFixed(3), st(PEACH, { fmt: '0.000', box: true })); g.put(pr, 15, +(x * F / 453.59237).toFixed(3), st(PEACH, { fmt: '0.000', box: true }));
+        pr++;
+      }
+      g.put(pr, 10, 'Total', st(null, { bold: true, box: true })); g.put(pr, 11, r2(raw), st(null, { bold: true, fmt: G2, box: true })); g.put(pr, 12, 1, st(null, { fmt: PCT, box: true }));
+      g.put(pr, 13, r2(raw * F), st(PEACH, { bold: true, fmt: G2, box: true })); g.put(pr, 14, +(raw * F / 1000).toFixed(3), st(PEACH, { bold: true, fmt: '0.000', box: true })); g.put(pr, 15, +(raw * F / 453.59237).toFixed(3), st(PEACH, { bold: true, fmt: '0.000', box: true }));
+
+      X.utils.book_append_sheet(xb, g.sheet([4, 18, 30, 13, 10, 13, 12, 13, 10, 3, 30, 14, 11, 13, 11, 11]), sheetName(root.name));
+    }
+
+    // Item & cost sheet: every ingredient in the recipe, with the template's columns
+    if (costs) {
+      const g = grid();
+      ['Ingredient no.', 'Ingredient', 'Cost per KG', 'Cost per G', 'Cost per lbs', 'Brand', 'Suplier', 'MOQ', 'Suply code if provided'].forEach((h, k) => g.put(0, k, h, st(GREY, { bold: true, box: true })));
+      [...used_ings.keys()].map(iid => NL.ingMap[iid] ? NL.ingMap[iid] : { id: iid, name: iid }).sort((a, b) => a.name.localeCompare(b.name)).forEach((ing, k) => {
+        const p = NL.price(ing.id), row = k + 1;
+        g.put(row, 0, k + 1, st(null, { box: true })); g.put(row, 1, ing.name, st(GREEN, { box: true }));
+        g.put(row, 2, p, st(GREEN, { fmt: USD, box: true })); g.put(row, 3, p == null ? null : p / 1000, st(ORANGE, { fmt: USD5, box: true })); g.put(row, 4, p == null ? null : p * 0.45359237, st(ORANGE, { fmt: USD, box: true }));
+        g.put(row, 5, '', st(null, { box: true })); g.put(row, 6, ing.vendor || '', st(null, { box: true })); g.put(row, 7, '', st(null, { box: true })); g.put(row, 8, '', st(null, { box: true }));
+      });
+      X.utils.book_append_sheet(xb, g.sheet([14, 34, 12, 12, 12, 16, 22, 8, 20]), sheetName('Item & cost sheet'));
+    }
+
+    // Nutrition (extra; the template has none)
+    {
+      const g = grid(), rc = hasFinal() ? calc[S.root] : null, others = Object.keys(S.asm).filter(id => id !== S.root);
+      g.put(0, 0, 'Nutrition', st(null, { bold: true, size: 13 })); g.put(1, 0, 'Values from the ingredient library.');
+      const head = ['Nutrient', ...(rc ? [A(S.root).name + ': per portion (' + r2(rc.yielded) + ' g)', '% Daily Value', A(S.root).name + ': per 100 g'] : []), ...others.map(id => A(id).name + ': per 100 g')];
+      head.forEach((h, k) => g.put(3, k, h, st(GREY, { bold: true, box: true, wrap: true })));
+      NL.NUTRIENTS.forEach((n, k) => {
+        const d = n.unit === 'mg' || !n.unit ? 0 : 1, rd = v => +(+v).toFixed(d), row = 4 + k; let col = 0;
+        g.put(row, col++, n.label + ' (' + (n.unit || 'kcal') + ')', st(null, { box: true }));
+        if (rc) { g.put(row, col++, rd(rc.perG[k] * rc.yielded), st(null, { box: true })); g.put(row, col++, n.dv ? Math.round(rc.perG[k] * rc.yielded / n.dv * 100) / 100 : null, st(null, { fmt: '0%', box: true })); g.put(row, col++, rd(rc.perG[k] * 100), st(null, { box: true })); }
+        for (const id of others) g.put(row, col++, rd(calc[id].perG[k] * 100), st(null, { box: true }));
+      });
+      if (rc) { g.put(5 + NL.NUTRIENTS.length, 0, 'Ingredients (largest first)', st(null, { bold: true })); g.put(6 + NL.NUTRIENTS.length, 0, NL.flatten(S, calc, S.root).map(([iid]) => NL.ingMap[iid]?.name || iid).join(', ')); }
+      X.utils.book_append_sheet(xb, g.sheet([26, 24, 12, 22, ...others.map(() => 22)]), sheetName('Nutrition'));
+    }
+
+    const title = hasFinal() ? A(S.root).name : (S.draftName || 'Untitled assembly');
+    const file = `${title.replace(/[\/:*?"<>|]/g, ' ').trim() || 'Recipe'} - Company template - ${today}${costs ? '' : ' (no costs)'}.xlsx`;
+    X.writeFile(xb, file);
+    NL.toast('Exported ' + file);
+  }
+  async function exportXlsx({ costs, layout = 'detailed', qty = 1 }) {
+    let X; try { X = await loadXlsx(); } catch { return NL.toast('Could not load the Excel exporter. Check the internet connection and try again'); }
+    calc = NL.calc(S); cost = NL.cost(S, calc); computeFlows(); computeBans();
+    if (layout === 'template') return exportTemplate(X, costs);
+    if (layout === 'card') return exportCard(X);
+    if (layout === 'production') return exportProduction(X, qty);
+    if (layout === 'costing') return exportCosting(X);
+    if (layout === 'spec') return exportSpec(X);
+    const u = NL.unitMode !== 'auto' ? NL.unitMode : NL.SYS_UNITS[NL.unitSys][0], pu = NL.pUnit();
+    const W = g => g == null || g === '' ? null : +((+g) / NL.UNITS[u]).toFixed(u === 'g' ? 2 : 4);   // weight in the export unit
+    const $v = v => v == null || !isFinite(v) ? null : Math.round(v * 10000) / 10000;                 // money, kept precise for small amounts
+    const pct = (a, b) => b > 0 ? +(a / b * 100).toFixed(2) : null;
+    const plainPin = p => p.mode === 'portion' ? `${+(+p.count).toFixed(2)} × ${W(p.size)} ${u}` : p.mode === 'base' ? `Base ${W(p.target)} ${u}` : `Yield ${W(p.target)} ${u}`;
+    const wb = X.utils.book_new(), used = new Set();
+    const sheetName = n => { const b = String(n).replace(/[\\/?*[\]:]/g, ' ').trim().slice(0, 28) || 'Sheet'; let name = b, k = 2; while (used.has(name.toLowerCase())) name = `${b.slice(0, 25)} ${k++}`; used.add(name.toLowerCase()); return name; };
+    const add = (name, rows, widths) => { const ws = X.utils.aoa_to_sheet(rows); ws['!cols'] = widths.map(w => ({ wch: w })); X.utils.book_append_sheet(wb, ws, sheetName(name)); };
+    const title = hasFinal() ? A(S.root).name : (S.draftName || 'Untitled assembly');
+    const order = sheetOrder(), today = new Date().toISOString().slice(0, 10);
+    const cardCost = id => { const a = A(id); return cost[id].batch + (a.packaging || []).reduce((t, r) => t + (+r.cost || 0), 0) + laborOf(a); };
+    const ingName = it => { const sid = subIdOf(it.ref); return sid ? (A(sid)?.name || '(missing)') + ' (sub-assembly)' : NL.ingMap[it.ref.slice(4)]?.name || it.ref; };
+
+    // Summary
+    const sum = [[title], ['Exported', today], ['Weights in', NL.UNIT_NAMES[u]]];
+    if (costs) sum.push(['Prices', '$ per ' + pu]);
+    if (hasFinal()) {
+      const rc = calc[S.root];
+      sum.push([], ['Final assembly', title], [`Portion weight (${u})`, W(rc.yielded)], ['kcal per portion', Math.round(rc.perG[0] * rc.yielded)]);
+      if (costs) sum.push(['Cost per portion ($)', $v(cardCost(S.root))]);
+      const fp = A(S.root).scalePins || [];
+      if (fp.length) sum.push([], ['Pinned scalings on the Final card'], ...fp.map(p => [plainPin(p)]));
+    }
+    sum.push([], ['Cards'], ['Card', 'Type', `Batch (${u})`, `Yield (${u})`, 'Cooking loss %', 'kcal / 100 g', ...(costs ? [`Cost per ${pu} ($)`] : [])]);
+    for (const id of order) {
+      const a = A(id), c = calc[id];
+      sum.push([a.name, id === S.root ? 'Final' : 'Sub-assembly', W(c.batch), W(c.yielded), +(+a.yieldLoss || 0), Math.round(c.perG[0] * 100), ...(costs ? [$v(NL.pOut(cost[id].perG * 1000))] : [])]);
+    }
+    add('Summary', sum, [34, 16, 14, 14, 14, 12, 14]);
+
+    // one sheet per card
+    for (const id of order) {
+      const a = A(id), c = calc[id], isRoot = id === S.root, base = baseTotal(a);
+      const pins = (a.scalePins || []).map(p => ({ label: 'Pinned: ' + plainPin(p), f: pinFactor(p, c, base) }));
+      const flows = isRoot ? [] : finFlows.filter(fl => fl.need[id] > 0 && c.yielded > 0).map(fl => ({ label: 'From Final: ' + plainPin(fl.p), f: fl.need[id] / c.yielded }));
+      const cols = [...pins, ...flows];
+      const rows = [[a.name], ['Type', isRoot ? 'Final assembly (per portion)' : 'Sub-assembly'], [`Batch (${u})`, W(c.batch)], [`Yield (${u})`, W(c.yielded)], ['Cooking loss %', +(+a.yieldLoss || 0)], [isRoot ? 'kcal per portion' : 'kcal / 100 g', Math.round(c.perG[0] * (isRoot ? c.yielded : 100))]];
+      if (costs) rows.push(isRoot ? ['Cost per portion ($)', $v(cardCost(id))] : [`Cost per ${pu} ($)`, $v(NL.pOut(cost[id].perG * 1000))]);
+      rows.push([], ['Ingredient', 'Vendor', `Weight (${u})`, 'Relative %', 'Baker %', ...(costs ? ['Cost ($)'] : []), ...cols.map(x => `${x.label} (${u})`)]);
+      for (const it of a.items) {
+        const amt = +it.amount || 0, sid = subIdOf(it.ref);
+        rows.push([ingName(it), sid ? '' : NL.ingMap[it.ref.slice(4)]?.vendor || '', W(amt), pct(amt, c.batch), base > 0 ? pct(amt, base) : null, ...(costs ? [$v(rowCost(it)?.v)] : []), ...cols.map(x => W(amt * x.f))]);
+      }
+      for (const r of a.packaging || []) rows.push(['Packaging: ' + (r.name || ''), '', W(r.weight), null, null, ...(costs ? [$v(r.cost)] : []), ...cols.map(x => r.weight == null ? null : W(r.weight * x.f))]);
+      rows.push(['Total', '', W(c.batch), c.batch > 0 ? 100 : null, base > 0 ? pct(c.batch, base) : null, ...(costs ? [$v(cardCost(id))] : []), ...cols.map(x => W(c.batch * x.f))]);
+      if (costs && cols.length) rows.push(['Cost of each column ($)', '', null, null, null, null, ...cols.map(x => $v(cardCost(id) * x.f))]);
+      if ((a.labor || []).length) {
+        rows.push([], ['Labor', 'Minutes', 'People', ...(costs ? ['Rate ($ / h)', 'Cost ($)'] : [])]);
+        for (const r of a.labor) rows.push([r.name || '', r.minutes ?? null, r.people ?? 1, ...(costs ? [r.rate ?? null, $v(laborCost(r))] : [])]);
+      }
+      const steps = (a.steps || []).filter(t => String(t).trim());
+      if (steps.length) rows.push([], ['Procedure'], ...steps.map((t, k) => [k + 1 + '. ' + t]));
+      if ((a.notes || '').trim()) rows.push([], ['Notes'], [a.notes]);
+      add(a.name, rows, [34, 18, 12, 11, 10, ...(costs ? [11] : []), ...cols.map(() => 22)]);
+    }
+
+    // Bill of materials: the Final flattened to raw ingredients and packaging, per portion and per pinned column
+    if (hasFinal()) {
+      const root = A(S.root), rc = calc[S.root], fp = root.scalePins || [], ff = fp.map(p => pinFactor(p, rc, baseTotal(root)));
+      const flat = NL.flatten(S, calc, S.root), raw = flat.reduce((t, [, g]) => t + g, 0) || 1;
+      const rows = [['Bill of materials: ' + title], ['Raw ingredients and packaging for one portion' + (fp.length ? ', and for each pinned scaling on the Final card' : '')], ['Raw weights are before cooking, so they add up to more than the finished portion when a sub-assembly loses weight.'], [],
+        ['Item', 'Vendor', `Per portion (${u})`, '% of raw weight', ...(costs ? ['Cost per portion ($)'] : []), ...fp.map(p => `${plainPin(p)} (${u})`), ...(costs ? fp.map(p => `${plainPin(p)} cost ($)`) : [])]];
+      let tg = 0, tc = 0;
+      for (const [iid, g] of flat) {
+        const ing = NL.ingMap[iid], pr = NL.price(iid), cg = pr == null ? null : g / 1000 * pr;
+        tg += g; tc += cg || 0;
+        rows.push([ing?.name || iid, ing?.vendor || '', W(g), pct(g, raw), ...(costs ? [$v(cg)] : []), ...ff.map(f => W(g * f)), ...(costs ? ff.map(f => cg == null ? null : $v(cg * f)) : [])]);
+      }
+      // packaging and labor of every card, in the share one portion uses
+      const share = { [S.root]: 1 };
+      (function walk(id, f) { for (const it of A(id).items) { const sid = subIdOf(it.ref); if (!sid || !A(sid) || !(calc[sid].yielded > 0)) continue; const g = (+it.amount || 0) * f, sf = g / calc[sid].yielded; share[sid] = (share[sid] || 0) + sf; walk(sid, sf); } })(S.root, 1);
+      for (const [id, sf] of Object.entries(share)) for (const r of A(id).packaging || []) {
+        const cg = r.cost == null ? null : r.cost * sf; tc += cg || 0;
+        rows.push(['Packaging: ' + (r.name || '') + (id === S.root ? '' : ` (${A(id).name})`), '', r.weight == null ? null : W(r.weight * sf), null, ...(costs ? [$v(cg)] : []), ...ff.map(f => r.weight == null ? null : W(r.weight * sf * f)), ...(costs ? ff.map(f => cg == null ? null : $v(cg * f)) : [])]);
+      }
+      if (costs) {
+        let lc = 0; for (const [id, sf] of Object.entries(share)) lc += laborOf(A(id)) * sf;
+        if (lc > 0) { tc += lc; rows.push(['Labor (all cards)', '', null, null, $v(lc), ...ff.map(() => null), ...ff.map(f => $v(lc * f))]); }
+      }
+      rows.push(['Total (weight = ingredients only)', '', W(tg), pct(tg, raw), ...(costs ? [$v(tc)] : []), ...ff.map(f => W(tg * f)), ...(costs ? ff.map(f => $v(tc * f)) : [])]);
+      if (flat.some(([iid]) => NL.price(iid) == null) && costs) rows.push([], ['Some ingredients have no price yet, so costs are a minimum']);
+      add('Bill of materials', rows, [36, 18, 16, 12, ...(costs ? [16] : []), ...fp.map(() => 20), ...(costs ? fp.map(() => 18) : [])]);
+    }
+
+    // Nutrition: Final per portion and per 100 g, every card per 100 g, ingredient statement
+    {
+      const nut = NL.NUTRIENTS, rc = hasFinal() ? calc[S.root] : null;
+      const head = ['Nutrient', ...(rc ? [`${title}: per portion (${+rc.yielded.toFixed(1)} g)`, '% Daily Value', `${title}: per 100 g`] : []), ...order.filter(id => id !== S.root).map(id => A(id).name + ': per 100 g')];
+      const rows = [['Nutrition'], ['Values from the ingredient library. Nutrition stays in grams.'], [], head];
+      nut.forEach((n, k) => {
+        const unit = n.unit || 'kcal', d = n.unit === 'mg' || !n.unit ? 0 : 1, r = v => +(+v).toFixed(d);
+        rows.push([`${n.label} (${unit})`, ...(rc ? [r(rc.perG[k] * rc.yielded), n.dv ? Math.round(rc.perG[k] * rc.yielded / n.dv * 100) + '%' : '', r(rc.perG[k] * 100)] : []), ...order.filter(id => id !== S.root).map(id => r(calc[id].perG[k] * 100))]);
+      });
+      if (rc) rows.push([], ['Ingredients (largest first)'], [NL.flatten(S, calc, S.root).map(([iid]) => NL.ingMap[iid]?.name || iid).join(', ')]);
+      add('Nutrition', rows, [26, 26, 14, 22, ...order.map(() => 22)]);
+    }
+
+    const file = `${title.replace(/[\\/:*?"<>|]/g, ' ').trim() || 'Recipe'} - ${today}${costs ? '' : ' (no costs)'}.xlsx`;
+    X.writeFile(wb, file);
+    NL.toast('Exported ' + file);
+  }
+  $('#exportBtn').onclick = exportDialog;
+
+  // ---------- ⬆ Import from Excel (rule-based, no AI) ----------
+  // Reads recipe blocks laid out like the team's workbook (and this app's own exports): a header row with
+  // "Ingredient" (+ "Quantity"), the name from a "Recipe" label above it (or the sheet name), rows until "Total",
+  // then "Yield %", "Procedure:" and "Notes:". A row naming another block on the sheet becomes a sub-assembly;
+  // the block nothing else uses becomes the Final. Each sheet becomes a new tab. Ingredients are matched to the
+  // library (same name, or a close match the chef confirms); the rest become new ingredients without nutrition.
+  const normName = t => String(t ?? '').toLowerCase().replace(/\((sub-assembly|see its card|from step above|wip)\)/g, ' ').replace(/[^a-z0-9]+/g, ' ').trim();
+  function readWorkbook(X, xbook) {
+    const sheets = [], prices = new Map();
+    for (const sn of xbook.SheetNames) {
+      const ws = xbook.Sheets[sn]; if (!ws || !ws['!ref']) continue;
+      const rg = X.utils.decode_range(ws['!ref']);
+      const val = (r, c) => { const cell = ws[X.utils.encode_cell({ r, c })]; return cell && cell.t !== 'e' ? cell.v : undefined; }; // skip Excel errors (#DIV/0!, #REF!)
+      const txt = (r, c) => { const v = val(r, c); return v == null ? '' : String(v).trim(); };
+      const blocks = [];
+      for (let r = rg.s.r; r <= rg.e.r; r++) {
+        let ic = -1; for (let c = rg.s.c; c <= rg.e.c; c++) if (/^ingredients?$/i.test(txt(r, c))) { ic = c; break; }
+        if (ic < 0) continue;
+        let qc = -1; for (let c = ic + 1; c <= rg.e.c; c++) if (/quantity|qty|amount|weight|grams|\(g\)/i.test(txt(r, c))) { qc = c; break; }
+        // a price list (like "Item & cost sheet"): Ingredient + Cost per KG or per lbs, and no Quantity column
+        const head = c => txt(r, c);
+        let pk = -1, pg = -1, pl = -1;
+        for (let c = rg.s.c; c <= rg.e.c; c++) { const h = head(c); if (/(cost|price).*(kg|kilo)/i.test(h)) pk = c; else if (/(cost|price).*\b(g|gram)s?\b/i.test(h)) pg = c; else if (/(cost|price).*(lb|pound)/i.test(h)) pl = c; }
+        if (qc < 0 && (pk >= 0 || pl >= 0)) {
+          for (let k = r + 1; k <= rg.e.r; k++) {
+            const nm = txt(k, ic); if (!nm) continue;
+            const num = c => { const v = val(k, c); return typeof v === 'number' && v > 0 ? v : null; };
+            const perKg = pk >= 0 && num(pk) ? num(pk) : pg >= 0 && num(pg) ? num(pg) * 1000 : pl >= 0 && num(pl) ? num(pl) / 0.45359237 : null;
+            if (perKg) prices.set(normName(nm), perKg);
+          }
+          break;
+        }
+        // the recipe name: a "Recipe" label up to 3 rows above -> text to its right, or the cell under it
+        let name = '';
+        for (let up = 1; up <= 3 && !name; up++) for (let c = rg.s.c; c <= rg.e.c; c++) if (/^recipe$/i.test(txt(r - up, c))) { for (let c2 = c + 1; c2 <= c + 4 && !name; c2++) name = txt(r - up, c2); if (!name) name = txt(r - up + 1, c); break; }
+        const items = []; let k = r + 1, gap = 0;
+        for (; k <= rg.e.r; k++) {
+          const nm = txt(k, ic), grp = ic > rg.s.c ? txt(k, ic - 1) : '';
+          if (/^total\b/i.test(nm) || /^(output|yield|after cook)/i.test(nm) || /^recipe$/i.test(nm) || /^recipe$/i.test(grp)) break;
+          if (!nm) { if (++gap >= 3) break; continue; }
+          gap = 0;
+          if (/^pkg$/i.test(grp) || /^(packaging|labor)\b/i.test(nm)) continue; // packaging / labor rows are not ingredients
+          const q = qc >= 0 ? val(k, qc) : undefined;
+          items.push({ name: nm, g: typeof q === 'number' && isFinite(q) && q > 0 ? q : 0 });
+        }
+        // after the total: yield %, procedure, notes (until the next recipe)
+        let yieldPct = null, steps = [], notes = '';
+        scan: for (let j = k; j <= Math.min(rg.e.r, k + 8); j++) for (let c = rg.s.c; c <= rg.e.c; c++) {
+          const t = txt(j, c);
+          if (/^recipe$/i.test(t)) break scan;
+          if (/^yield\s*%/i.test(t) && yieldPct == null) { for (let c2 = c + 1; c2 <= rg.e.c; c2++) { const v = val(j, c2); if (typeof v === 'number' && v > 0) { yieldPct = v <= 1.5 ? v * 100 : v; break; } } }
+          else if (/^procedure\s*:/i.test(t)) steps = t.replace(/^procedure\s*:\s*/i, '').split(/\s*\d+[.)]\s+/).map(x => x.trim()).filter(Boolean);
+          else if (/^notes?\s*:/i.test(t)) notes = t.replace(/^notes?\s*:\s*/i, '').trim();
+        }
+        if (items.length) blocks.push({ name, items, yieldPct, steps, notes });
+        r = k;
+      }
+      if (blocks.length) sheets.push({ sheet: sn, blocks });
+    }
+    return { sheets, prices };
+  }
+  async function importFile(file) {
+    let X; try { X = await loadXlsx(); } catch { return NL.toast('Could not load the Excel reader. Check the internet connection and try again'); }
+    let xbook; try { xbook = X.read(await file.arrayBuffer()); } catch { return NL.toast('Could not read that file. Use an .xlsx, .xls or .csv file'); }
+    const { sheets, prices } = readWorkbook(X, xbook);
+    if (!sheets.length) return NL.toast('No recipes found. The importer looks for a header row with "Ingredient" (and "Quantity")');
+    // every name used, minus the ones that are other recipes on the same sheet
+    const recipeNames = sh => new Set(sh.blocks.map(b => normName(b.name)).filter(Boolean));
+    const isRecipe = (sh, nm) => { const n = normName(nm), set = recipeNames(sh), wip = n.match(/\bwip (\d+)\b/); return set.has(n) || [...set].some(b => n.startsWith(b + ' ') || (wip && new RegExp('\\bwip ' + wip[1] + '\\b').test(b))); };
+    const names = new Map();
+    for (const sh of sheets) for (const b of sh.blocks) for (const it of b.items) if (!isRecipe(sh, it.name) && !names.has(normName(it.name))) names.set(normName(it.name), { name: it.name, ...NL.matchName(it.name) });
+    const ORDER = { new: 0, close: 1, remembered: 2, same: 3 };
+    const list = [...names.values()].sort((a, b) => ORDER[a.kind] - ORDER[b.kind] || a.name.localeCompare(b.name));
+    const cnt = k => list.filter(x => x.kind === k).length, priced = list.filter(x => prices.has(normName(x.name))).length;
+    const ov = document.createElement('div'); ov.className = 'nl-prompt-ov';
+    ov.innerHTML = `<form class="nl-prompt nif im-box">
+      <div class="nl-prompt-label">Import from Excel <small>${NL.esc(file.name)}</small></div>
+      <div class="xp-sub">Each sheet becomes a new tab. Recipes used inside another recipe become sub-assemblies. Check the matches below, then import.</div>
+      <div class="im-sheets">${sheets.map((sh, i) => `<label><input type="checkbox" name="sh" value="${i}" checked> <b>${NL.esc(sh.sheet)}</b> <span>${sh.blocks.length} recipe${sh.blocks.length === 1 ? '' : 's'}: ${NL.esc(sh.blocks.map(b => b.name || '(no name)').join(', '))}</span></label>`).join('')}</div>
+      <div class="im-stats"><span class="im-same">✓ ${cnt('same') + cnt('remembered')} matched${cnt('remembered') ? ` (${cnt('remembered')} remembered)` : ''}</span><span class="im-close">≈ ${cnt('close')} close match</span><span class="im-new">＋ ${cnt('new')} new</span></div>
+      <div class="xp-sub">The box shows the library ingredient each name will use. Type to change it, or clear it to add a new ingredient. Your choices are remembered on this computer for the next import.</div>
+      <div class="im-list">${list.map((x, i) => `<div class="im-row im-${x.kind}"><span class="im-nm">${NL.esc(x.name)}</span><span class="im-pick"><span class="im-ic">${{ same: '✓', remembered: '↺', close: '≈', new: '＋' }[x.kind]}</span><input class="im-in" name="m${i}" list="imLib" value="${x.ing ? NL.esc(x.ing.name) : ''}" placeholder="new ingredient (no nutrition yet)" title="${x.kind === 'remembered' ? 'Remembered from an earlier import' : x.kind === 'close' ? 'Close match: check it' : x.kind === 'same' ? 'Same name in the library' : 'Not in the library: a new ingredient will be added'}">${x.hint ? `<button type="button" class="im-hint" data-hint="${i}" data-name="${NL.esc(x.hint.name)}">Use ${NL.esc(x.hint.name)}?</button>` : ''}</span></div>`).join('')}</div>
+      <datalist id="imLib">${NL.INGREDIENTS.map(g => `<option value="${NL.esc(g.name)}">`).join('')}</datalist>
+      ${priced ? `<label class="xp-chk"><input type="checkbox" name="prices" checked> Use prices from the file's price list <small>(${priced} found)</small></label>` : ''}
+      <div class="nl-prompt-btns"><button type="submit" class="btn primary">⬆ Import</button><button type="button" class="btn ghost nl-prompt-cancel">Cancel</button></div>
+    </form>`;
+    document.body.appendChild(ov);
+    const f = ov.querySelector('form'), close = () => ov.remove();
+    ov.querySelector('.nl-prompt-cancel').onclick = close;
+    ov.addEventListener('pointerdown', e => { if (e.target === ov) close(); });
+    ov.addEventListener('keydown', e => { if (e.key === 'Escape') close(); });
+    f.addEventListener('click', e => { const b = e.target.closest('[data-hint]'); if (!b) return; f.elements['m' + b.dataset.hint].value = b.dataset.name; b.remove(); });
+    f.onsubmit = e => {
+      e.preventDefault();
+      const pick = [...f.querySelectorAll('[name=sh]:checked')].map(x => sheets[+x.value]);
+      if (!pick.length) return NL.toast('Tick at least one sheet');
+      const usePrices = !!f.elements.prices?.checked, byName = new Map(NL.INGREDIENTS.map(g => [NL.matchKey(g.name), g]));
+      // resolve every name to a library id (creating new ingredients once)
+      const idOf = new Map();
+      list.forEach((x, i) => {
+        // the box: a library name → that ingredient; empty → a new ingredient with the file's name; other text → a new ingredient with that name
+        const typed = (f.elements['m' + i]?.value || '').trim();
+        let ing = typed ? byName.get(NL.matchKey(typed)) : null;
+        if (!ing) { ing = NL.addIngredient({ id: NL.uid('c'), name: typed || x.name.trim(), cat: NL.CUSTOM_CAT, vendor: null, n: NL.NUTRIENTS.map(() => 0), custom: true, price: null }); byName.set(NL.matchKey(ing.name), ing); }
+        if (x.kind !== 'same' || ing !== x.ing) NL.rememberAlias(x.name, ing.id); // next import of this name needs no review
+        idOf.set(normName(x.name), ing.id);
+        const p = prices.get(normName(x.name)); if (usePrices && p) NL.setPrice(ing.id, p);
+      });
+      close();
+      let n = 0;
+      for (const sh of pick) {
+        const ids = sh.blocks.map(() => NL.uid('a')), byName = new Map(), used = new Set(), asm = {};
+        sh.blocks.forEach((b, i) => { const k = normName(b.name); if (k && !byName.has(k)) byName.set(k, i); });
+        sh.blocks.forEach((b, i) => {
+          const items = b.items.map(it => {
+            const nn = normName(it.name); let j = byName.get(nn);
+            if (j == null) for (const [bn, bi] of byName) if (bn && nn.startsWith(bn + ' ')) { j = bi; break; }
+            // the team's numbering: "WIP 2, cooked chicken" is the recipe whose name carries "WIP 2"
+            const wip = nn.match(/\bwip (\d+)\b/);
+            if (j == null && wip) for (const [bn, bi] of byName) if (bi !== i && new RegExp('\\bwip ' + wip[1] + '\\b').test(bn)) { j = bi; break; }
+            if (j != null && j !== i) { used.add(j); return { ref: 'asm:' + ids[j], amount: it.g }; }
+            return { ref: 'ing:' + idOf.get(nn), amount: it.g };
+          }).filter(it => !it.ref.endsWith(':undefined'));
+          asm[ids[i]] = { name: b.name || sh.sheet + ' ' + (i + 1), items, yieldLoss: b.yieldPct != null ? +Math.max(0, Math.min(99.99, 100 - b.yieldPct)).toFixed(2) : 0, steps: b.steps, notes: b.notes };
+        });
+        const tops = ids.filter((_, i) => !used.has(i));
+        wb.add({ root: tops[tops.length - 1] || null, asm, _arrange: true, draftName: sh.sheet }, sh.sheet);
+        n++;
+      }
+      NL.toast(`Imported ${n} sheet${n === 1 ? '' : 's'} into new tab${n === 1 ? '' : 's'}. New ingredients have no nutrition yet: add it from the ingredient list`);
+    };
+  }
+  { const inp = $('#importFile'); $('#importBtn').onclick = () => { useSide('left'); clearTimeout(typingT); commit(); loadXlsx().catch(() => { }); inp.value = ''; inp.click(); }; inp.onchange = () => { if (inp.files[0]) importFile(inp.files[0]); }; }
+  // ⚙ Settings drawer: open / close (Esc closes too)
+  { const box = $('#settings'), btn = $('#settingsBtn'); let snap = null;
+    const show = on => { box.hidden = !on; btn.classList.toggle('on', on); };
+    const open = () => { snap = settingsReg.map(r => r.get()); show(true); };
+    const cancel = () => { if (snap) settingsReg.forEach((r, i) => { if (JSON.stringify(r.get()) !== JSON.stringify(snap[i])) r.set(snap[i]); }); snap = null; show(false); };
+    const save = () => { snap = null; show(false); NL.toast('Settings saved'); };
+    btn.onclick = () => box.hidden ? open() : cancel();
+    $('#settingsClose').onclick = cancel;
+    $('#settingsCancel').onclick = cancel;
+    $('#settingsSave').onclick = save;
+    document.addEventListener('keydown', e => { if (e.key === 'Escape' && !box.hidden && !document.querySelector('.nl-prompt-ov, .nl-prompt')) cancel(); });
   }
   $('#retailAdd').onclick = () => NL.prompt('Retailer name (e.g. Aldi)', '').then(v => {
     const name = (v || '').trim(); if (!name) return;
@@ -877,11 +1492,25 @@
   $('#retailList').addEventListener('keydown', e => {
     const id = e.target.dataset?.rtadd; if (!id || e.key !== 'Enter') return;
     e.preventDefault();
-    const t = e.target.value.trim(), list = readRetail(), r = list.find(x => x.id === id); if (!t || !r) return;
-    if (!r.bans.some(b => b.toLowerCase() === t.toLowerCase())) r.bans.push(t);
+    addBans(id, splitItems(e.target.value));
+  });
+  // paste a whole list: one per line, or comma / semicolon separated on one line; bullets and numbers are dropped
+  $('#retailList').addEventListener('paste', e => {
+    const id = e.target.dataset?.rtadd; if (!id) return;
+    const txt = e.clipboardData?.getData('text') || '';
+    const parts = splitItems(txt);
+    if (parts.length < 2) return; // a single item: paste into the box as usual
+    e.preventDefault();
+    addBans(id, parts);
+  });
+  function addBans(id, items) {
+    const list = readRetail(), r = list.find(x => x.id === id); if (!r) return;
+    let n = 0;
+    for (const t of items.map(x => x.trim()).filter(Boolean)) if (!r.bans.some(b => b.toLowerCase() === t.toLowerCase())) { r.bans.push(t); n++; }
     saveRetail(list); render();
     $(`#retailList [data-rtadd="${id}"]`)?.focus();
-  });
+    if (items.length > 1) NL.toast(`Added ${n} to ${r.name}${items.length - n ? ` (${items.length - n} already listed)` : ''}`);
+  }
   addEventListener('storage', e => { if (e.key === RETAIL) render(); });
   function drawFavs() {
     const list = readFavs();
@@ -1160,7 +1789,6 @@
   $('#spCard').onchange = e => { split.card = e.target.value; render(); $('#spBody').scrollTop = 0; };
   $('#spLeft').onchange = e => { const id = e.target.value; e.target.value = ''; if (!id) return; useSide('left'); goto(id); };
   $('#spClose').onclick = () => closeSplit();
-  new ResizeObserver(() => withSide('right', () => { if (prefs.links === 'lines') drawSheetLinks(); })).observe($('#spCards'));
 
   // ---------- compare assemblies / versions ----------
   function recipeStats(state) {
@@ -1565,7 +2193,9 @@
   // board: show or hide the link lines between cards (remembered per browser)
   { const btn = $('#linesBtn'); let off = false; try { off = localStorage.getItem('nlv3_hide_links') === '1'; } catch { }
     const apply = () => { document.body.classList.toggle('hide-links', off); btn.classList.toggle('off', off); btn.textContent = off ? '⤳ Lines off' : '⤳ Lines'; btn.setAttribute('aria-pressed', String(!off)); };
-    btn.onclick = () => { off = !off; try { localStorage.setItem('nlv3_hide_links', off ? '1' : '0'); } catch { } apply(); };
+    const setOff = v => { off = v; try { localStorage.setItem('nlv3_hide_links', off ? '1' : '0'); } catch { } apply(); };
+    btn.onclick = () => setOff(!off);
+    settingsReg.push({ get: () => off, set: setOff });
     apply(); }
   $('#arrange').onclick = () => { useSide('left'); arrange(); commit(); vp.fit(bounds()); };
   $('#zin').onclick = () => vp.zoom(1.2);
@@ -1581,8 +2211,10 @@
   const unitsChanged = () => { for (const k in fieldUnit) delete fieldUnit[k]; render(); }; // boxes take the new units at once
   sysSel.onchange = () => { NL.setUnits(sysSel.value, 'auto'); fillModes(); unitsChanged(); NL.toast(`${sysSel.value === 'metric' ? 'Metric (g / kg)' : 'Imperial (oz / lb)'}. Choose Auto or one fixed unit in the next box`); };
   modeSel.onchange = () => { NL.setUnits(NL.unitSys, modeSel.value); unitsChanged(); };
+  settingsReg.push({ get: () => [NL.unitSys, NL.unitMode], set: ([sys, mode]) => { NL.setUnits(sys, mode); fillModes(); unitsChanged(); } });
   const styleSel = $('#scaleStyle'); styleSel.value = scaleStyle;
   styleSel.onchange = () => { scaleStyle = styleSel.value === 'hide' ? 'hide' : 'flip'; try { localStorage.setItem('nlv3_scale_style', scaleStyle); } catch { } render(); };
+  settingsReg.push({ get: () => scaleStyle, set: v => { styleSel.value = v; styleSel.onchange(); } });
   $('#toggleNut').onclick = () => {
     useSide('left');
     const m = $('#cmain'); m.classList.toggle('show-nut');
@@ -1606,12 +2238,9 @@
     $('#themeBtn').textContent = dark ? '☀' : '☾';
     $('#themeBtn').title = dark ? 'Switch to light mode' : 'Switch to dark mode';
   }
-  $('#themeBtn').onclick = () => {
-    const t = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
-    document.documentElement.dataset.theme = t;
-    try { localStorage.setItem('nlv3_theme', t); } catch { }
-    showTheme();
-  };
+  const setTheme = t => { document.documentElement.dataset.theme = t; try { localStorage.setItem('nlv3_theme', t); } catch { } showTheme(); };
+  $('#themeBtn').onclick = () => setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
+  settingsReg.push({ get: () => document.documentElement.dataset.theme, set: setTheme }, { get: () => view, set: setView });
   showTheme();
   // hide / show the left panel (remembered per browser)
   const SIDE = 'nlv3_side_hidden';
