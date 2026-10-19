@@ -21,8 +21,6 @@
     topId = id;
     boardCardsEl.querySelectorAll('.rcard').forEach(el => { el.style.zIndex = zOf(el.dataset.id); });
   };
-  // ⚙ Settings: each setting registers how to read itself and put itself back, so Cancel can undo a session
-  const settingsReg = [];
   const flipIn = {}; // card id -> 1 while its flip-in animation should play
   const fwErr = {}; // card id -> message while the typed final weight is invalid
   const amtErr = {}; // 'card:row' -> message while a typed ingredient weight is invalid
@@ -602,7 +600,6 @@
     document.querySelectorAll('[data-svwidth]').forEach(b => b.classList.toggle('on', b.dataset.svwidth === prefs.width));
   }
   function savePrefs() { try { localStorage.setItem(PREFS, JSON.stringify(prefs)); } catch { } applyPrefs(); }
-  settingsReg.push({ get: () => ({ ...prefs }), set: p => { Object.assign(prefs, p); savePrefs(); render(); } });
   applyPrefs();
 
   // saved order first, then any new cards; with no saved order, final assembly then its sub-assemblies depth-first
@@ -1457,17 +1454,15 @@
     };
   }
   { const inp = $('#importFile'); $('#importBtn').onclick = () => { useSide('left'); clearTimeout(typingT); commit(); loadXlsx().catch(() => { }); inp.value = ''; inp.click(); }; inp.onchange = () => { if (inp.files[0]) importFile(inp.files[0]); }; }
-  // ⚙ Settings drawer: open / close (Esc closes too)
-  { const box = $('#settings'), btn = $('#settingsBtn'); let snap = null;
+  // ⚙ Settings drawer: every choice is saved as it is made (Esc or × closes)
+  { const box = $('#settings'), btn = $('#settingsBtn'), note = $('#settingsSaved'); let t;
     const show = on => { box.hidden = !on; btn.classList.toggle('on', on); };
-    const open = () => { snap = settingsReg.map(r => r.get()); show(true); };
-    const cancel = () => { if (snap) settingsReg.forEach((r, i) => { if (JSON.stringify(r.get()) !== JSON.stringify(snap[i])) r.set(snap[i]); }); snap = null; show(false); };
-    const save = () => { snap = null; show(false); NL.toast('Settings saved'); };
-    btn.onclick = () => box.hidden ? open() : cancel();
-    $('#settingsClose').onclick = cancel;
-    $('#settingsCancel').onclick = cancel;
-    $('#settingsSave').onclick = save;
-    document.addEventListener('keydown', e => { if (e.key === 'Escape' && !box.hidden && !document.querySelector('.nl-prompt-ov, .nl-prompt')) cancel(); });
+    btn.onclick = () => show(box.hidden);
+    $('#settingsClose').onclick = () => show(false);
+    document.addEventListener('keydown', e => { if (e.key === 'Escape' && !box.hidden && !document.querySelector('.nl-prompt-ov, .nl-prompt')) show(false); });
+    const saved = () => { note.classList.add('on'); clearTimeout(t); t = setTimeout(() => note.classList.remove('on'), 1600); };
+    box.addEventListener('change', saved);
+    box.addEventListener('click', e => { if (e.target.closest('button[data-view], button[data-svlinks], button[data-svwidth], #themeBtn, #linesBtn')) saved(); });
   }
   $('#retailAdd').onclick = () => NL.prompt('Retailer name (e.g. Aldi)', '').then(v => {
     const name = (v || '').trim(); if (!name) return;
@@ -2195,7 +2190,6 @@
     const apply = () => { document.body.classList.toggle('hide-links', off); btn.classList.toggle('off', off); btn.textContent = off ? '⤳ Lines off' : '⤳ Lines'; btn.setAttribute('aria-pressed', String(!off)); };
     const setOff = v => { off = v; try { localStorage.setItem('nlv3_hide_links', off ? '1' : '0'); } catch { } apply(); };
     btn.onclick = () => setOff(!off);
-    settingsReg.push({ get: () => off, set: setOff });
     apply(); }
   $('#arrange').onclick = () => { useSide('left'); arrange(); commit(); vp.fit(bounds()); };
   $('#zin').onclick = () => vp.zoom(1.2);
@@ -2211,10 +2205,8 @@
   const unitsChanged = () => { for (const k in fieldUnit) delete fieldUnit[k]; render(); }; // boxes take the new units at once
   sysSel.onchange = () => { NL.setUnits(sysSel.value, 'auto'); fillModes(); unitsChanged(); NL.toast(`${sysSel.value === 'metric' ? 'Metric (g / kg)' : 'Imperial (oz / lb)'}. Choose Auto or one fixed unit in the next box`); };
   modeSel.onchange = () => { NL.setUnits(NL.unitSys, modeSel.value); unitsChanged(); };
-  settingsReg.push({ get: () => [NL.unitSys, NL.unitMode], set: ([sys, mode]) => { NL.setUnits(sys, mode); fillModes(); unitsChanged(); } });
   const styleSel = $('#scaleStyle'); styleSel.value = scaleStyle;
   styleSel.onchange = () => { scaleStyle = styleSel.value === 'hide' ? 'hide' : 'flip'; try { localStorage.setItem('nlv3_scale_style', scaleStyle); } catch { } render(); };
-  settingsReg.push({ get: () => scaleStyle, set: v => { styleSel.value = v; styleSel.onchange(); } });
   $('#toggleNut').onclick = () => {
     useSide('left');
     const m = $('#cmain'); m.classList.toggle('show-nut');
@@ -2240,7 +2232,6 @@
   }
   const setTheme = t => { document.documentElement.dataset.theme = t; try { localStorage.setItem('nlv3_theme', t); } catch { } showTheme(); };
   $('#themeBtn').onclick = () => setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
-  settingsReg.push({ get: () => document.documentElement.dataset.theme, set: setTheme }, { get: () => view, set: setView });
   showTheme();
   // hide / show the left panel (remembered per browser)
   const SIDE = 'nlv3_side_hidden';
